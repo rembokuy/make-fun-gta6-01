@@ -1,140 +1,170 @@
-// Traffic: mobil AI yang melaju di grid jalan sesuai lajur, berbelok di
-// persimpangan, dan melambat untuk mobil di depannya. Mobil parkir adalah
-// yang bisa dicuri pemain — mereka diam di tepi jalan tanpa sopir.
-// Saat Rush Hour, modul ini menambah mobil sampai kepadatan tiga kali lipat
-// dan menariknya kembali saat event selesai.
+// SOLMARINA — AI traffic. Cars drive the road grid, turn at intersections,
+// queue behind each other and stop dead in front of a police roadblock.
+// Rush Hour triples the active fleet from 14 to 42.
 
-import { CITY, ROAD_LINES, RUSH_TRAFFIC_BONUS, TRAFFIC_COUNT } from './game-config.js';
-import { buildCarMesh, driveCar, newCar, randomPaint, syncCar } from './driveable-vehicles.js';
+import * as THREE from 'three';
+import { CONFIG } from './game-config.js';
 
-function randomRoadSpot(rng) {
-  const horizontal = rng.next() < 0.5;
-  const line = rng.pick(ROAD_LINES);
-  const along = rng.range(-170, 170);
-  const lane = rng.next() < 0.5 ? -CITY.laneOffset : CITY.laneOffset;
-  if (horizontal) return { x: along, z: line + lane, heading: lane > 0 ? Math.PI / 2 : -Math.PI / 2, horizontal };
-  return { x: line + lane, z: along, heading: lane > 0 ? Math.PI : 0, horizontal };
+const PAINT = [0xc23b2e, 0x2e6fc2, 0xe8e8e8, 0x2b2f36, 0xd8a83a, 0x4da06a, 0x8a5fc0, 0xd8d3c8, 0x3a9e9e];
+
+export function makeCarMesh(color, isTaxi = false) {
+  const group = new THREE.Group();
+  const bodyMat = new THREE.MeshLambertMaterial({ color });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.75, 4.4), bodyMat);
+  body.position.y = 0.65;
+  group.add(body);
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(1.8, 0.65, 2.2),
+    new THREE.MeshLambertMaterial({ color: 0x1c2733 }),
+  );
+  cabin.position.set(0, 1.3, -0.2);
+  group.add(cabin);
+  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.32, 10);
+  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x141414 });
+  for (const [wx, wz] of [[-1.05, 1.45], [1.05, 1.45], [-1.05, -1.45], [1.05, -1.45]]) {
+    const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(wx, 0.42, wz);
+    group.add(wheel);
+  }
+  if (isTaxi) {
+    const sign = new THREE.Mesh(
+      new THREE.BoxGeometry(0.9, 0.3, 0.5),
+      new THREE.MeshLambertMaterial({ color: 0x111111 }),
+    );
+    sign.position.set(0, 1.85, -0.2);
+    group.add(sign);
+  }
+  return group;
 }
 
-function spawnMovingCar(scene, rng, driver) {
-  const spot = randomRoadSpot(rng);
-  const taxi = rng.next() < 0.12;
-  const mesh = buildCarMesh(taxi ? 0xf7c948 : randomPaint(rng), taxi ? { taxi: true } : {});
-  scene.add(mesh);
-  const car = newCar(mesh, spot.x, spot.z, spot.heading, driver);
-  car.speed = rng.range(7, 12);
-  car.horizontal = spot.horizontal;
-  car.cruise = car.speed;
-  syncCar(car);
-  return car;
-}
-
-export function spawnStreetTraffic(scene, rng) {
+export function createTraffic(scene, world, rng) {
   const cars = [];
-  for (let i = 0; i < TRAFFIC_COUNT; i++) cars.push(spawnMovingCar(scene, rng, 'traffic'));
-  // Mobil parkir yang bisa dicuri, di tepi jalan.
-  const parked = [];
-  for (let i = 0; i < 8; i++) {
-    const spot = randomRoadSpot(rng);
-    const mesh = buildCarMesh(randomPaint(rng));
+  const pool = [];
+  for (let i = 0; i < CONFIG.traffic.rush; i++) {
+    const mesh = makeCarMesh(PAINT[i % PAINT.length], i % 9 === 4);
+    mesh.visible = false;
     scene.add(mesh);
-    const car = newCar(
+    pool.push(mesh);
+  }
+
+  function spawnCar(mesh) {
+    const spot = world.pointOnRoad();
+    // Keep the lane offset to the right of the road direction.
+    const right = spot.axis === 'x' ? { x: 0, z: 3 } : { x: 3, z: 0 };
+    const car = {
       mesh,
-      spot.x + (spot.horizontal ? 0 : 5.4),
-      spot.z + (spot.horizontal ? 5.4 : 0),
-      spot.heading,
-      null,
-    );
-    parked.push(car);
-    syncCar(car);
+      x: spot.x + right.x,
+      z: spot.z + right.z,
+      heading: spot.heading,
+      axis: spot.axis,
+      speed: rng.range(CONFIG.traffic.minSpeed, CONFIG.traffic.maxSpeed),
+      cruise: rng.range(CONFIG.traffic.minSpeed, CONFIG.traffic.maxSpeed),
+      active: true,
+      stopped: false,
+    };
+    mesh.visible = true;
+    mesh.position.set(car.x, 0, car.z);
+    mesh.rotation.y = car.heading;
+    cars.push(car);
+    return car;
   }
-  return { cars, parked, extras: [] };
-}
 
-// Tambah mobil ekstra untuk Rush Hour. Mengembalikan jumlah yang ditambah.
-export function addRushTraffic(scene, rng, traffic) {
-  let added = 0;
-  for (let i = 0; i < RUSH_TRAFFIC_BONUS; i++) {
-    const car = spawnMovingCar(scene, rng, 'traffic');
-    traffic.cars.push(car);
-    traffic.extras.push(car);
-    added += 1;
+  function turnAtIntersection(car) {
+    // At a crossing, keep going, turn left, or turn right.
+    const roll = rng.next();
+    if (roll < 0.55) return;
+    car.heading += roll < 0.78 ? Math.PI / 2 : -Math.PI / 2;
+    car.axis = car.axis === 'x' ? 'z' : 'x';
   }
-  return added;
-}
 
-// Tarik kembali mobil ekstra Rush Hour (sisanya tetap berjalan normal).
-export function removeRushTraffic(scene, traffic) {
-  for (const car of traffic.extras) {
-    const idx = traffic.cars.indexOf(car);
-    if (idx >= 0) traffic.cars.splice(idx, 1);
-    scene.remove(car.mesh);
-  }
-  traffic.extras.length = 0;
-}
+  const traffic = {
+    cars,
+    target: CONFIG.traffic.base,
 
-function nearestAhead(self, cars) {
-  let best = Infinity;
-  for (const other of cars) {
-    if (other === self) continue;
-    const dx = other.pos.x - self.pos.x;
-    const dz = other.pos.z - self.pos.z;
-    const forward = Math.sin(self.heading) * dx + Math.cos(self.heading) * dz;
-    const side = Math.abs(Math.cos(self.heading) * dx - Math.sin(self.heading) * dz);
-    if (forward > 0 && forward < 14 && side < 2.4) best = Math.min(best, forward);
-  }
-  return best;
-}
+    setTarget(n) {
+      traffic.target = n;
+    },
 
-export function stepTraffic(traffic, dt, rng, roadblocks = []) {
-  for (const car of traffic.cars) {
-    // Berhenti sebelum barikade Rush Hour yang ada di depan.
-    let blocked = false;
-    for (const block of roadblocks) {
-      const dx = block.x - car.pos.x;
-      const dz = block.z - car.pos.z;
-      const forward = Math.sin(car.heading) * dx + Math.cos(car.heading) * dz;
-      const side = Math.abs(Math.cos(car.heading) * dx - Math.sin(car.heading) * dz);
-      if (forward > 0 && forward < 11 && side < 3.4) {
-        blocked = true;
-        break;
+    get count() {
+      return cars.length;
+    },
+
+    reset(seedCount) {
+      for (const car of cars) {
+        car.mesh.visible = false;
+        car.active = false;
       }
-    }
-    // Di persimpangan, kadang berbelok ke jalan yang memotong.
-    const onLineX = Math.abs(car.pos.x - Math.round(car.pos.x / 75) * 75) < 1.2;
-    const onLineZ = Math.abs(car.pos.z - Math.round(car.pos.z / 75) * 75) < 1.2;
-    if (car.horizontal ? onLineX : onLineZ) {
-      if (rng.next() < 0.002) {
-        car.horizontal = !car.horizontal;
-        car.heading = car.horizontal
-          ? (rng.next() < 0.5 ? Math.PI / 2 : -Math.PI / 2)
-          : (rng.next() < 0.5 ? Math.PI : 0);
-      }
-    }
-    // Bungkus di tepi kota supaya traffic tidak pernah habis.
-    if (car.pos.x > 185) car.pos.x = -185;
-    if (car.pos.x < -185) car.pos.x = 185;
-    if (car.pos.z > 185) car.pos.z = -185;
-    if (car.pos.z < -185) car.pos.z = 185;
+      cars.length = 0;
+      const n = seedCount ?? traffic.target;
+      for (let i = 0; i < n; i++) spawnCar(pool[i]);
+    },
 
-    const ahead = nearestAhead(car, traffic.cars);
-    const want = blocked
-      ? 0
-      : ahead < 12
-        ? Math.max(0, (ahead - 6) / 6) * car.cruise
-        : car.cruise;
-    const throttle = car.speed < want ? 0.6 : 0;
-    // Koreksi kembali ke tengah lajur saat melayang.
-    const line = Math.round((car.horizontal ? car.pos.z : car.pos.x) / 75) * 75;
-    const off = (car.horizontal ? car.pos.z : car.pos.x) - line;
-    const laneSteer = Math.max(-0.4, Math.min(0.4, -off * 0.05));
-    driveCar(
-      car,
-      throttle,
-      car.horizontal ? laneSteer * Math.sign(Math.sin(car.heading)) : laneSteer * Math.sign(Math.cos(car.heading)),
-      dt,
-      null,
-    );
-    car.speed = Math.max(0, car.speed);
-  }
+    update(dt, roadblocks = []) {
+      // Grow or shrink the fleet toward the target.
+      while (cars.length < traffic.target) {
+        const mesh = pool[cars.length];
+        if (!mesh) break;
+        spawnCar(mesh);
+      }
+      while (cars.length > traffic.target) {
+        const car = cars.pop();
+        car.mesh.visible = false;
+        car.active = false;
+      }
+
+      for (const car of cars) {
+        // Stop for a roadblock or the car ahead on the same road.
+        let blocked = false;
+        for (const rb of roadblocks) {
+          const dx = rb.x - car.x;
+          const dz = rb.z - car.z;
+          const dist = Math.hypot(dx, dz);
+          if (dist < 13) {
+            const ahead = Math.sin(car.heading) * dx + Math.cos(car.heading) * dz;
+            if (ahead > 0 && Math.abs(Math.cos(car.heading) * dx - Math.sin(car.heading) * dz) < 5) {
+              blocked = true;
+            }
+          }
+        }
+        if (!blocked) {
+          for (const other of cars) {
+            if (other === car) continue;
+            const dx = other.x - car.x;
+            const dz = other.z - car.z;
+            const dist = Math.hypot(dx, dz);
+            if (dist < CONFIG.traffic.carGap) {
+              const ahead = Math.sin(car.heading) * dx + Math.cos(car.heading) * dz;
+              if (ahead > 0) {
+                blocked = true;
+                break;
+              }
+            }
+          }
+        }
+        car.stopped = blocked;
+        const speed = blocked ? 0 : car.cruise;
+        car.speed += (speed - car.speed) * Math.min(1, dt * 2);
+        car.x += Math.sin(car.heading) * car.speed * dt;
+        car.z += Math.cos(car.heading) * car.speed * dt;
+
+        // Turn only at a real intersection, where both coordinates sit on roads.
+        const nearLine = (v) => Math.abs(v - Math.round(v / 60) * 60) < 2;
+        if (nearLine(car.x) && nearLine(car.z) && rng.chance(0.02)) turnAtIntersection(car);
+        const clamped = world.clampToCity(car.x, car.z);
+        if (clamped.x !== car.x || clamped.z !== car.z || Math.abs(car.x) > 240 || Math.abs(car.z) > 240) {
+          const spot = world.pointOnRoad();
+          car.x = spot.x;
+          car.z = spot.z;
+          car.heading = spot.heading;
+          car.axis = spot.axis;
+        }
+        car.mesh.position.set(car.x, 0, car.z);
+        car.mesh.rotation.y = car.heading;
+      }
+    },
+  };
+
+  traffic.reset(CONFIG.traffic.base);
+  return traffic;
 }

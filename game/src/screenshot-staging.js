@@ -1,255 +1,155 @@
-// Empat adegan screenshot di balik ?shot=chase|walk|drive|mission.
-// Tiap adegan memainkan aturan sungguhan dari dunia segar selama beberapa
-// detik dengan sopir naskah, lalu MENEMPATKAN ulang mobil, polisi, dan
-// pejalan kaki di sekitar pemain — supaya frame selalu padat aksi dan
-// seed yang sama selalu memberi frame yang sama. main.js melukis adegan
-// dua kali dan menyetel window.__shotReady untuk screenshot.
+// SOLMARINA — screenshot staging. Each ?shot= scene is built from fixed
+// positions on the seeded city, rendered once, and then frozen: no sim time
+// advances, so the same shot renders byte-identical on every run.
 
-import { STEP } from './game-config.js';
-import { buildCarMesh, newCar, syncCar } from './driveable-vehicles.js';
-import { raiseWanted, spawnCopAt } from './wanted-police.js';
-import { placePed } from './sidewalk-crowd.js';
-import { forcePlaceRoadblock, forceStartRushHour } from './rush-hour.js';
-import { stepSolmarina } from './solmarina-world.js';
+import { CONFIG } from './game-config.js';
 
-const SAMPLE = STEP;
-
-function scriptedInput(script) {
-  return {
-    takeActions: () => 0,
-    takeMouseDelta: () => ({ dx: 0, dy: 0 }),
-    throttle: () => script.throttle ?? 0,
-    steer: () => script.steer ?? 0,
-    sprint: () => !!script.sprint,
-    mouseDown: () => false,
-    wheelDelta: () => 0,
-  };
+function resetStage(G) {
+  G.rng.reseed(CONFIG.seed);
+  G.missions.reset();
+  G.wanted.clear();
+  G.rush.reset();
+  G.crowd.reset();
+  G.traffic.reset(CONFIG.traffic.base);
+  if (G.player.inVehicle) G.player.exitVehicle();
+  G.player.heal(CONFIG.player.health);
+  G.effects.hideWaypoint();
+  G.renderer.pinCamera(null);
+  G.state = 'shot';
+  G.simTime = 0;
 }
 
-function driveSim(world, seconds, script) {
-  const input = scriptedInput(script);
-  const steps = Math.round(seconds / SAMPLE);
-  for (let i = 0; i < steps; i++) stepSolmarina(world, SAMPLE, input);
-}
-
-// Melaju sampai misi aktif selesai (atau batas waktu) — lalu berhenti
-// seketika, supaya langkah misi berikutnya belum sempat berjalan.
-function driveUntilMissionDone(world, maxSeconds, script) {
-  const input = scriptedInput(script);
-  const steps = Math.round(maxSeconds / SAMPLE);
-  for (let i = 0; i < steps; i++) {
-    stepSolmarina(world, SAMPLE, input);
-    if (world.story.index >= 1) break;
+function placePolice(G, spots, heading) {
+  G.wanted.heat = 160;
+  G.wanted.level = 5;
+  for (let i = 0; i < spots.length && i < G.wanted.cruisers.length; i++) {
+    const c = G.wanted.cruisers[i];
+    c.active = true;
+    c.x = spots[i].x;
+    c.z = spots[i].z;
+    c.heading = heading;
+    c.speed = 24;
+    c.mesh.visible = true;
+    c.mesh.position.set(c.x, 0, c.z);
+    c.mesh.rotation.y = heading;
   }
 }
 
-function givePlayerCar(world, x, z, heading, speed = 0) {
-  const mesh = buildCarMesh(0xd94f3d);
-  world.scene.add(mesh);
-  const car = newCar(mesh, x, z, heading, 'player');
-  car.speed = speed;
-  world.player.car = car;
-  world.player.mesh.visible = false;
-  world.player.pos.x = x;
-  world.player.pos.z = z;
-  world.player.heading = heading;
-  syncCar(car);
-  return car;
+function placeTrafficLine(G, road, xs, heading) {
+  for (let i = 0; i < xs.length && i < G.traffic.cars.length; i++) {
+    const car = G.traffic.cars[i];
+    car.x = xs[i].x;
+    car.z = xs[i].z;
+    car.heading = heading;
+    car.axis = 'x';
+    car.speed = 10;
+    car.mesh.position.set(car.x, 0, car.z);
+    car.mesh.rotation.y = heading;
+  }
+  void road;
 }
 
-function forwardOf(x, z, heading, dist, side = 0) {
-  // Titik di depan (dist) dan ke samping (side) dari sebuah posisi/arah.
-  // Maju = (sin h, cos h); kanan = (cos h, -sin h).
-  return {
-    x: x + Math.sin(heading) * dist + Math.cos(heading) * side,
-    z: z + Math.cos(heading) * dist - Math.sin(heading) * side,
-  };
-}
-
-// Pindahkan mobil traffic ke-i ke titik dan arah tertentu.
-function placeTrafficCar(world, index, x, z, heading, speed = 8) {
-  const car = world.traffic.cars[index % world.traffic.cars.length];
-  car.pos.x = x;
-  car.pos.z = z;
+function drivePlayer(G, x, z, heading) {
+  const car = G.vehicles.cars[0];
+  car.parked = false;
+  car.stolen = true;
+  car.x = x;
+  car.z = z;
   car.heading = heading;
-  car.speed = speed;
-  car.horizontal = Math.abs(Math.sin(heading)) > 0.5;
-  car.cruise = Math.max(speed, 8);
-  syncCar(car);
+  car.speed = 18;
+  car.mesh.position.set(x, 0, z);
+  car.mesh.rotation.y = heading;
+  G.player.teleport(x, z, heading);
+  G.player.enterVehicle(car);
   return car;
 }
 
-function placeCop(world, x, z, heading, speed = 10) {
-  const cop = spawnCopAt(world.wanted, x, z, world.player.pos);
-  cop.heading = heading;
-  cop.speed = speed;
-  syncCar(cop);
-  return cop;
+function finishShot(G, name) {
+  G.shotName = name;
+  G.hud.update(G.buildHudState());
+  G.renderer.render();
+  window.__shotReady = true;
 }
 
-function setCamera(world, yaw, pitch, dist) {
-  world.cameraYaw = yaw;
-  world.cameraPitch = pitch;
-  world.cameraDist = dist;
-}
+export function stageShot(G, name) {
+  resetStage(G);
 
-function setMoney(world, money) {
-  world.player.money = money;
-  world.player.totalEarned = money;
-}
+  if (name === 'chase') {
+    // Rush Hour chase: 42 cars, 3 roadblocks, 5 wanted stars, cruisers tight.
+    G.rush.forceStart();
+    G.traffic.reset(CONFIG.traffic.rush);
+    const car = drivePlayer(G, -30, 120, Math.PI / 2);
+    void car;
+    placeTrafficLine(G, 120, [
+      { x: -8, z: 117 }, { x: 2, z: 123 }, { x: 16, z: 117 },
+      { x: 32, z: 123 }, { x: 48, z: 117 }, { x: -18, z: 123 },
+    ], Math.PI / 2);
+    placePolice(G, [
+      { x: -48, z: 124 }, { x: -56, z: 117 }, { x: -66, z: 122 },
+    ], Math.PI / 2);
+    const blocks = G.rush.roadblocks;
+    if (blocks[0]) {
+      blocks[0].x = 6;
+      blocks[0].z = 120;
+      blocks[0].mesh.position.set(6, 0, 120);
+      blocks[0].mesh.rotation.y = Math.PI / 2;
+    }
+    if (blocks[1]) {
+      blocks[1].x = 44;
+      blocks[1].z = 120;
+      blocks[1].mesh.position.set(44, 0, 120);
+      blocks[1].mesh.rotation.y = Math.PI / 2;
+    }
+    if (blocks[2]) {
+      blocks[2].x = 18;
+      blocks[2].z = 60;
+      blocks[2].mesh.position.set(18, 0, 60);
+      blocks[2].mesh.rotation.y = 0;
+    }
+    G.crowd.scare(-30, 120, 60);
+    G.renderer.pinCamera({ x: -72, y: 10, z: 140 }, { x: 0, y: 2, z: 118 });
+    G.hud.toast('RUSH HOUR — 5★ — lolos dari kejaran!', 30);
+  } else if (name === 'walk') {
+    // Rae on foot on the beach promenade, crowd around, tower up the coast.
+    // x = 40 threads the camera between two promenade palms.
+    G.player.teleport(40, 195, Math.PI);
+    for (let i = 0; i < 8 && i < G.crowd.walkers.length; i++) {
+      const w = G.crowd.walkers[i];
+      w.x = 28 + i * 4;
+      w.z = 192 + (i % 3) * 4;
+      w.heading = Math.PI;
+      w.mesh.position.set(w.x, 0, w.z);
+      w.mesh.rotation.y = w.heading;
+    }
+    G.renderer.pinCamera({ x: 40, y: 7, z: 212 }, { x: 80, y: 2, z: 130 });
+  } else if (name === 'drive') {
+    // Rae driving the coast road, ocean on the right, traffic ahead.
+    drivePlayer(G, -80, 180, Math.PI / 2);
+    placeTrafficLine(G, 180, [
+      { x: -48, z: 177 }, { x: -28, z: 183 }, { x: -6, z: 177 }, { x: 16, z: 183 },
+    ], Math.PI / 2);
+    G.renderer.pinCamera({ x: -102, y: 8, z: 180 }, { x: -20, y: 2, z: 180 });
+  } else {
+    // Mission: Rae carries the courier package to the southern drop-off,
+    // the waypoint beam burning gold ahead of her.
+    G.missions.index = 0;
+    G.missions.step = 1;
+    G.missions.hasPackage = true;
+    G.missions.story = 'Paket di tangan. Jangan berhenti — antar ke selatan.';
+    G.missions.refreshObjective();
+    G.player.teleport(102, 120, Math.PI / 2);
+    const drop = G.world.spots.packageDrop;
+    G.effects.setWaypoint(drop.x, drop.z);
+    for (let i = 0; i < 2 && i < G.combat.thugs.length; i++) {
+      const t = G.combat.thugs[i];
+      t.x = 114 + i * 10;
+      t.z = 112 + i * 12;
+      t.mesh.position.set(t.x, 0, t.z);
+    }
+    G.renderer.pinCamera({ x: 88, y: 5.5, z: 120 }, { x: 122, y: 2, z: 120 });
+  }
 
-function stageChase(world) {
-  // Cover: kejar-kejaran polisi DI TENGAH Rush Hour.
-  const heading = Math.PI / 2; // ke timur, menyusuri jalan z = 0
-  const car = givePlayerCar(world, -10, 0, heading, 12);
-  world.story.stage = 2;
-  world.story.waypoint = { x: -75, z: 75 };
-  world.story.objective = 'Antar paket ke Menara Kaca.';
-  setMoney(world, 620);
-  raiseWanted(world.wanted, 5);
-  forceStartRushHour(world.rush, { scene: world.scene, rng: world.rng, traffic: world.traffic });
-  driveSim(world, 2.5, { throttle: 1, steer: 0 });
-  // Bingkai ulang di sekitar posisi akhir mobil pemain.
-  const px = world.player.pos.x;
-  const pz = world.player.pos.z;
-  const ahead = forwardOf(px, pz, heading, 18);
-  forcePlaceRoadblock(world.rush, ahead.x, ahead.z, Math.PI / 2);
-  // Polisi: ketiganya di depan pemain (di dalam frame kamera yang
-  // menghadap ke depan) — dua mengejar searah, satu menghadang head-on.
-  const copA = forwardOf(px, pz, heading, 10, -6);
-  const copB = forwardOf(px, pz, heading, 17, 5);
-  const copC = forwardOf(px, pz, heading, 12, 0);
-  placeCop(world, copA.x, copA.z, heading, 18);
-  placeCop(world, copB.x, copB.z, heading, 18);
-  placeCop(world, copC.x, copC.z, -heading, 14);
-  // Traffic padat: tiga di depan di dua lajur, dua di jalan memotong.
-  const t1 = forwardOf(px, pz, heading, 16, -3);
-  const t2 = forwardOf(px, pz, heading, 22, 3);
-  const t3 = forwardOf(px, pz, heading, 26, -3);
-  placeTrafficCar(world, 0, t1.x, t1.z, heading, 10);
-  placeTrafficCar(world, 1, t2.x, t2.z, heading, 9);
-  placeTrafficCar(world, 2, t3.x, t3.z, heading, 10);
-  placeTrafficCar(world, 3, px + 4, 75, 0, 9);
-  placeTrafficCar(world, 4, px - 8, -75, Math.PI, 9);
-  placeTrafficCar(world, 5, t2.x + 2, t2.z + 2, heading, 0);
-  car.speed = 14;
-  syncCar(car);
-  setCamera(world, heading, 0.2, 13);
-  if (world.onEvent) world.onEvent('toast', 'RUSH HOUR! Traffic ×3 — roadblock di depan. Payout +50%!');
-  return 'chase';
-}
-
-function stageWalk(world) {
-  // Jalan kaki di trotoar ramai: pejalan kaki di dekat, satu preman
-  // tumbang (bekas combat), satu mobil polisi, dan mobil parkir siap dicuri.
-  const player = world.player;
-  player.pos.x = 8.6;
-  player.pos.z = -66;
-  player.heading = 0; // menghadap kamera (kamera di selatan)
-  player.mesh.position.set(8.6, 0, -66);
-  player.mesh.rotation.y = 0;
-  setMoney(world, 45);
-  world.story.stage = 1;
-  world.story.objective = 'Ambil paket di Pasar Ikan (tanda kuning).';
-  raiseWanted(world.wanted, 2);
-  driveSim(world, 1, { throttle: 0, steer: 0 });
-  // Kerumunan di sekitar pemain — empat orang dalam jarak 6 meter.
-  placePed(world.crowd[0], 6.2, -62, Math.PI, 'walk');
-  placePed(world.crowd[1], 11.4, -63.5, Math.PI / 2, 'walk');
-  placePed(world.crowd[2], 5.4, -70, 0, 'walk');
-  placePed(world.crowd[3], 12.2, -69, -Math.PI / 2, 'walk');
-  // Satu preman tumbang tepat di depan Rae — momen combat yang terlihat.
-  placePed(world.crowd[4], 8.0, -62.5, Math.PI / 2, 'down');
-  world.crowd[4].mesh.rotation.x = -Math.PI / 2;
-  // Polisi di jalan z = -75 dan mobil parkir siap dicuri di tepi jalan.
-  placeCop(world, 3, -72, Math.PI / 2, 12);
-  const parked = world.traffic.parked[0];
-  parked.pos.x = 5.4;
-  parked.pos.z = -72;
-  parked.heading = 0;
-  syncCar(parked);
-  placeTrafficCar(world, 0, -14, -72, Math.PI / 2, 9);
-  placeTrafficCar(world, 1, 16, -78, -Math.PI / 2, 9);
-  setCamera(world, Math.PI, 0.3, 9);
-  return 'walk';
-}
-
-function stageDrive(world) {
-  // Menyetir di tengah traffic padat di jalan x = 0.
-  const heading = 0; // ke utara (+z)
-  const car = givePlayerCar(world, 0, -60, heading, 12);
-  setMoney(world, 120);
-  world.story.stage = 2;
-  world.story.waypoint = { x: -75, z: 75 };
-  world.story.objective = 'Antar paket ke Menara Kaca.';
-  raiseWanted(world.wanted, 2);
-  driveSim(world, 3.5, { throttle: 1, steer: 0 });
-  const px = world.player.pos.x;
-  const pz = world.player.pos.z;
-  // Enam mobil AI terlihat: tiga di depan di dua lajur, dua di jalan
-  // memotong, satu di belakang.
-  const a = forwardOf(px, pz, heading, 16, -3);
-  const b = forwardOf(px, pz, heading, 24, 3);
-  const c = forwardOf(px, pz, heading, 32, -3);
-  placeTrafficCar(world, 0, a.x, a.z, heading, 10);
-  placeTrafficCar(world, 1, b.x, b.z, heading, 9);
-  placeTrafficCar(world, 2, c.x, c.z, heading, 10);
-  placeTrafficCar(world, 3, px + 3, 75, Math.PI / 2, 9);
-  placeTrafficCar(world, 4, px - 3, 0, -Math.PI / 2, 9);
-  const behind = forwardOf(px, pz, heading, -14, 3);
-  placeTrafficCar(world, 5, behind.x, behind.z, heading, 11);
-  // Satu polisi mengejar dari belakang.
-  const copSpot = forwardOf(px, pz, heading, -22, -3);
-  placeCop(world, copSpot.x, copSpot.z, heading, 20);
-  car.speed = 16;
-  syncCar(car);
-  setCamera(world, heading, 0.2, 11);
-  return 'drive';
-}
-
-function stageMission(world) {
-  // Misi 1 selesai: paket sudah di tangan, melaju ke Menara Kaca —
-  // lalu momen selesainya (toast + $) dengan polisi dan traffic di frame.
-  world.story.stage = 2;
-  world.story.waypoint = { x: -75, z: 75 };
-  world.story.objective = 'Antar paket ke Menara Kaca.';
-  const car = givePlayerCar(world, -75, 69, 0, 10);
-  setMoney(world, 0);
-  driveUntilMissionDone(world, 2, { throttle: 1, steer: 0 });
-  // Setelah driveUntilMissionDone, misi 1 selesai dan toast +$250 sudah
-  // terpanggil — dan langkah misi 2 belum sempat berjalan.
-  // Bingkai ulang mobil di dekat Menara Kaca.
-  car.pos.x = -75;
-  car.pos.z = 71;
-  car.heading = 0;
-  car.speed = 6;
-  syncCar(car);
-  world.player.pos.x = -75;
-  world.player.pos.z = 71;
-  world.player.heading = 0;
-  raiseWanted(world.wanted, 2);
-  // Polisi di depan pemain (kamera menghadap ke utara): satu menghadang
-  // head-on, satu mengejar dari samping.
-  placeCop(world, -84, 88, Math.PI, 14);
-  placeCop(world, -64, 92, Math.PI, 12);
-  placeTrafficCar(world, 0, -72, 84, Math.PI, 9);
-  placeTrafficCar(world, 1, -78, 60, 0, 9);
-  placeTrafficCar(world, 2, -66, 75, Math.PI / 2, 8);
-  placeTrafficCar(world, 3, -84, 78, -Math.PI / 2, 8);
-  placePed(world.crowd[0], -70, 76, Math.PI, 'walk');
-  placePed(world.crowd[1], -80, 72, 0, 'walk');
-  setCamera(world, 0, 0.22, 11);
-  return 'mission';
-}
-
-/**
- * Stage adegan bernama pada dunia segar dan kembalikan label untuk HUD.
- * 'chase' adalah cover: kejar-kejaran polisi saat Rush Hour, dengan
- * wanted 5 bintang, roadblock, objective misi, dan minimap sekaligus.
- */
-export function stageShot(name, world) {
-  if (name === 'chase') return stageChase(world);
-  if (name === 'drive') return stageDrive(world);
-  if (name === 'mission') return stageMission(world);
-  return stageWalk(world); // 'walk' dan nama lain: jalan kaki di trotoar ramai
+  G.hud.showStart(false);
+  finishShot(G, name);
+  return name;
 }

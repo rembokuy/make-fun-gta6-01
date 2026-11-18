@@ -1,81 +1,80 @@
-// Renderer: satu kanvas WebGL, bayangan lembut, dan kamera third-person
-// yang membuntuti Rae (atau mobilnya) pada yaw dan pitch dunia, meluncur
-// ke targetnya supaya belokan terasa halus, bukan menyentak.
+// SOLMARINA — the three.js renderer: one WebGL canvas, a sun-soaked sky,
+// hemisphere + directional light, and the chase camera that follows Rae on
+// foot or behind the wheel. Shot mode pins the camera for a fixed frame.
 
 import * as THREE from 'three';
+import { CONFIG } from './game-config.js';
 
-export function createSceneRenderer(canvas) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+export function createRenderer(canvas) {
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    preserveDrawingBuffer: true,
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 900);
-  const camPos = new THREE.Vector3(0, 8, -14);
-  const camTarget = new THREE.Vector3(0, 1.5, 0);
+  scene.background = new THREE.Color(CONFIG.colors.sky);
+  scene.fog = new THREE.Fog(CONFIG.colors.sky, 260, 620);
+
+  const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x6a7a55, 0.95);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(CONFIG.colors.sun, 1.6);
+  sun.position.set(120, 180, 60);
+  scene.add(sun);
+
+  const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
+  camera.position.set(0, 26, 46);
+
+  let shotCamera = null;
 
   function resize() {
-    const w = canvas.clientWidth || window.innerWidth;
-    const h = canvas.clientHeight || window.innerHeight;
-    renderer.setSize(w, h, false);
+    const w = window.innerWidth;
+    const h = window.innerHeight;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
   }
   window.addEventListener('resize', resize);
-  resize();
 
-  return {
+  const api = {
     renderer,
     scene,
     camera,
-    // Membuntuti pemain: kamera duduk di belakang yaw dunia, setinggi
-    // pitch, melihat sedikit ke depan pemain.
-    follow(world, dt) {
-      const player = world.player;
-      const yaw = world.cameraYaw;
-      const dist = world.cameraDist;
-      const height = 2.2 + Math.sin(world.cameraPitch) * dist;
-      const back = Math.cos(world.cameraPitch) * dist;
-      const tx = player.pos.x;
-      const tz = player.pos.z;
-      const wantX = tx - Math.sin(yaw) * back;
-      const wantZ = tz - Math.cos(yaw) * back;
-      const k = Math.min(1, dt * 6);
-      camPos.x += (wantX - camPos.x) * k;
-      camPos.y += (height - camPos.y) * k;
-      camPos.z += (wantZ - camPos.z) * k;
-      const lookX = tx + Math.sin(yaw) * 2;
-      const lookZ = tz + Math.cos(yaw) * 2;
-      camTarget.x += (lookX - camTarget.x) * Math.min(1, dt * 10);
-      camTarget.y += (1.6 - camTarget.y) * Math.min(1, dt * 10);
-      camTarget.z += (lookZ - camTarget.z) * Math.min(1, dt * 10);
-      camera.position.copy(camPos);
-      camera.lookAt(camTarget);
+    resize,
+
+    // Follow the target from behind: higher and further back in a car.
+    follow(target, dt) {
+      if (shotCamera) return;
+      const behind = target.inVehicle ? 15 : 10;
+      const height = target.inVehicle ? 6.5 : 5;
+      const hx = Math.sin(target.heading) * -1;
+      const hz = Math.cos(target.heading) * -1;
+      const wantX = target.x + hx * behind;
+      const wantZ = target.z + hz * behind;
+      const k = 1 - Math.pow(0.0001, dt);
+      camera.position.x += (wantX - camera.position.x) * k;
+      camera.position.y += (target.y + height - camera.position.y) * k;
+      camera.position.z += (wantZ - camera.position.z) * k;
+      camera.lookAt(target.x, target.y + 1.6, target.z);
     },
-    // Jepret kamera ke posisi ikutannya seketika — dipakai staging
-    // screenshot supaya frame pertama sudah final, bukan masih meluncur.
-    snap(world) {
-      const player = world.player;
-      const yaw = world.cameraYaw;
-      const dist = world.cameraDist;
-      const height = 2.2 + Math.sin(world.cameraPitch) * dist;
-      const back = Math.cos(world.cameraPitch) * dist;
-      camPos.set(
-        player.pos.x - Math.sin(yaw) * back,
-        height,
-        player.pos.z - Math.cos(yaw) * back,
-      );
-      camTarget.set(
-        player.pos.x + Math.sin(yaw) * 2,
-        1.6,
-        player.pos.z + Math.cos(yaw) * 2,
-      );
-      camera.position.copy(camPos);
-      camera.lookAt(camTarget);
+
+    // Pin the camera for a staged screenshot; null releases it.
+    pinCamera(position, lookAt) {
+      if (!position) {
+        shotCamera = null;
+        return;
+      }
+      shotCamera = { position, lookAt };
+      camera.position.set(position.x, position.y, position.z);
+      camera.lookAt(lookAt.x, lookAt.y, lookAt.z);
     },
-    draw() {
+
+    render() {
       renderer.render(scene, camera);
     },
   };
+
+  return api;
 }

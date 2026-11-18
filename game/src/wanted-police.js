@@ -1,116 +1,130 @@
-// Wanted dan polisi Solmarina. Kejahatan menaikkan level; polisi muncul
-// dari RNG ber-seed (bukan Math.random, supaya adegan bisa diulang),
-// mengejar pemain, dan menabrak mobilnya. Tertangkap jalan kaki saat
-// polisi menempel cukup lama — atau menghancurkan mobil di wanted tinggi —
-// membuat Rae tertangkap.
+// SOLMARINA — the wanted system. Crimes add heat, heat decays when Rae is
+// out of sight, and each star puts another police cruiser on her tail.
+// At five stars the whole coast is chasing her.
 
-import { COP_MAX, PALETTE, WANTED } from './game-config.js';
-import { buildCarMesh, driveCar, flashCopLights, newCar, syncCar } from './driveable-vehicles.js';
+import * as THREE from 'three';
+import { CONFIG } from './game-config.js';
+import { makeCarMesh } from './street-traffic.js';
 
-export function createWantedPolice(scene, rng) {
-  return {
-    wanted: 0,
-    sinceCrime: 999,
-    decayTimer: 0,
-    cops: [],
-    bustedTimer: 0,
-    scene,
-    rng,
+export function createWanted(scene, world, rng) {
+  const cfg = CONFIG.wanted;
+  const cruisers = [];
+  for (let i = 0; i < cfg.max; i++) {
+    const mesh = makeCarMesh(CONFIG.colors.police);
+    const bar = new THREE.Mesh(
+      new THREE.BoxGeometry(1.1, 0.22, 0.5),
+      new THREE.MeshBasicMaterial({ color: 0xff2222 }),
+    );
+    bar.position.set(0, 1.75, -0.2);
+    bar.name = 'lightbar';
+    mesh.add(bar);
+    mesh.visible = false;
+    scene.add(mesh);
+    cruisers.push({ mesh, bar, x: 0, z: 0, heading: 0, speed: 0, active: false, flash: 0 });
+  }
+
+  const wanted = {
+    heat: 0,
+    level: 0,
+    unseenTimer: 0,
+    cruisers,
+
+    addHeat(amount, kind) {
+      this.heat = Math.min(220, this.heat + amount);
+      this.unseenTimer = 0;
+      const next = cfg.thresholds.filter((t) => this.heat >= t).length;
+      if (next > this.level) this.level = Math.min(cfg.max, next);
+      return this.level;
+    },
+
+    clear() {
+      this.heat = 0;
+      this.level = 0;
+      this.unseenTimer = 0;
+    },
+
+    get pursued() {
+      return this.level > 0;
+    },
+
+    update(dt, player, simTime) {
+      // Heat cools off only while the police cannot see Rae.
+      const nearest = this.nearestCruiserDistance(player);
+      const seen = this.level > 0 && nearest < 70;
+      if (seen) {
+        this.unseenTimer = 0;
+      } else {
+        this.unseenTimer += dt;
+        if (this.unseenTimer > cfg.unseenGrace) {
+          this.heat = Math.max(0, this.heat - cfg.decayPerSecond * dt);
+          const next = cfg.thresholds.filter((t) => this.heat >= t).length;
+          this.level = Math.min(cfg.max, next);
+        }
+      }
+
+      // One cruiser per star, spawning on a road behind the player.
+      const want = this.level * cfg.policePerStar;
+      for (let i = 0; i < cruisers.length; i++) {
+        const c = cruisers[i];
+        if (i < want && !c.active) {
+          const spot = world.pointOnRoad();
+          c.x = player.x + rng.range(-60, 60);
+          c.z = player.z + rng.range(-60, 60);
+          const clamped = world.clampToCity(c.x, c.z);
+          c.x = clamped.x;
+          c.z = clamped.z;
+          c.heading = Math.atan2(player.x - c.x, player.z - c.z);
+          c.speed = 0;
+          c.active = true;
+          c.mesh.visible = true;
+          void spot;
+        } else if (i >= want && c.active) {
+          c.active = false;
+          c.mesh.visible = false;
+        }
+      }
+
+      for (const c of cruisers) {
+        if (!c.active) continue;
+        // Chase steering: turn toward Rae, full speed on the straights.
+        const wantHeading = Math.atan2(player.x - c.x, player.z - c.z);
+        let diff = wantHeading - c.heading;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        c.heading += Math.max(-2.4 * dt, Math.min(2.4 * dt, diff));
+        const targetSpeed = cfg.policeSpeed * (this.level >= 5 ? 1.15 : 1);
+        c.speed += (targetSpeed - c.speed) * Math.min(1, dt * 1.2);
+        c.x += Math.sin(c.heading) * c.speed * dt;
+        c.z += Math.cos(c.heading) * c.speed * dt;
+        const clamped = world.clampToCity(c.x, c.z);
+        c.x = clamped.x;
+        c.z = clamped.z;
+        c.mesh.position.set(c.x, 0, c.z);
+        c.mesh.rotation.y = c.heading;
+        // Flashing light bar, flipping on the half-second.
+        c.flash += dt;
+        c.bar.material.color.setHex(Math.floor(simTime * 2) % 2 === 0 ? 0xff2222 : 0x2244ff);
+      }
+    },
+
+    nearestCruiserDistance(player) {
+      let best = Infinity;
+      for (const c of cruisers) {
+        if (!c.active) continue;
+        best = Math.min(best, Math.hypot(c.x - player.x, c.z - player.z));
+      }
+      return best;
+    },
+
+    // A cruiser ramming Rae hurts; used by the main loop for contact.
+    ramDamage(player) {
+      for (const c of cruisers) {
+        if (!c.active) continue;
+        if (Math.hypot(c.x - player.x, c.z - player.z) < 2.8) return 6;
+      }
+      return 0;
+    },
   };
-}
 
-export function raiseWanted(police, amount) {
-  police.wanted = Math.min(WANTED.max, police.wanted + amount);
-  police.sinceCrime = 0;
-  police.decayTimer = 0;
-}
-
-export function lowerWanted(police, amount) {
-  police.wanted = Math.max(0, police.wanted - amount);
-  if (police.wanted === 0) police.decayTimer = 0;
-}
-
-function spawnCop(police, near) {
-  const angle = police.rng.angle();
-  const x = near.x + Math.sin(angle) * 48;
-  const z = near.z + Math.cos(angle) * 48;
-  return spawnCopAt(police, x, z, near);
-}
-
-// Munculkan satu mobil polisi di koordinat pasti, menghadap pemain.
-// Dipakai staging screenshot supaya polisi selalu terlihat di frame.
-export function spawnCopAt(police, x, z, near) {
-  const cx = Math.max(-185, Math.min(185, x));
-  const cz = Math.max(-185, Math.min(185, z));
-  const mesh = buildCarMesh(PALETTE.copCar, { police: true });
-  police.scene.add(mesh);
-  const target = near ?? { x: cx, z: cz };
-  const cop = newCar(mesh, cx, cz, Math.atan2(target.x - cx, target.z - cz), 'police');
-  cop.speed = 16;
-  cop.cruise = 20;
-  police.cops.push(cop);
-  syncCar(cop);
-  return cop;
-}
-
-export function removeAllCops(police) {
-  for (const cop of police.cops) police.scene.remove(cop.mesh);
-  police.cops.length = 0;
-  police.bustedTimer = 0;
-}
-
-export function stepPolice(police, dt, player, colliders, timeSeconds, onBusted) {
-  police.sinceCrime += dt;
-
-  // Wanted meluruh setelah masa tenang.
-  if (police.wanted > 0 && police.sinceCrime > WANTED.decayDelay) {
-    police.decayTimer += dt;
-    if (police.decayTimer >= WANTED.decayEvery) {
-      police.decayTimer = 0;
-      police.wanted -= 1;
-    }
-  }
-
-  const wantCops = police.wanted === 0 ? 0 : Math.min(COP_MAX, police.wanted + 1);
-  while (police.cops.length < wantCops) spawnCop(police, player.pos);
-  while (police.cops.length > wantCops) {
-    const cop = police.cops.pop();
-    police.scene.remove(cop.mesh);
-  }
-
-  for (const cop of police.cops) {
-    flashCopLights(cop, timeSeconds);
-    const dx = player.pos.x - cop.pos.x;
-    const dz = player.pos.z - cop.pos.z;
-    const dist = Math.hypot(dx, dz);
-    const targetHeading = Math.atan2(dx, dz);
-    let diff = targetHeading - cop.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    const steer = Math.max(-1, Math.min(1, diff * 1.4));
-    const throttle = dist > 4 ? 1 : 0.3;
-    driveCar(cop, throttle, steer, dt, colliders, null);
-    // Polisi yang menabrak keras mendorong mobil pemain.
-    if (dist < 3.4 && player.car) {
-      player.car.speed *= 0.96;
-      police.sinceCrime = 0;
-    }
-    // Tertangkap: jalan kaki dan polisi menempel cukup lama.
-    if (!player.car && dist < 2.6) {
-      police.bustedTimer += dt;
-      if (police.bustedTimer > 2.2 && onBusted) onBusted();
-    } else {
-      police.bustedTimer = Math.max(0, police.bustedTimer - dt * 2);
-    }
-    // Polisi yang tertinggal jauh teleport lebih dekat, supaya
-    // kejar-kejaran tidak pernah mati.
-    if (dist > 160) {
-      const angle = police.rng.angle();
-      cop.pos.x = player.pos.x + Math.sin(angle) * 60;
-      cop.pos.z = player.pos.z + Math.cos(angle) * 60;
-      cop.heading = Math.atan2(player.pos.x - cop.pos.x, player.pos.z - cop.pos.z);
-      cop.speed = 12;
-      syncCar(cop);
-    }
-  }
+  return wanted;
 }

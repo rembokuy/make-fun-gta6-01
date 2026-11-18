@@ -1,109 +1,82 @@
-// Partikel murah: satu awan THREE.Points yang didaur ulang. Percikan
-// untuk pukulan, asap abu-abu untuk tabrakan, kilau emas untuk pickup,
-// dan confetti warna-warni saat misi selesai. Tidak ada alokasi per frame.
-// Semua keacakan memakai RNG ber-seed supaya screenshot bisa diulang.
+// SOLMARINA — visual effects: muzzle flashes, hit sparks, pickup sparkles,
+// tyre smoke and the glowing waypoint beam. One small pooled set of meshes,
+// no textures, everything fades on sim time.
 
 import * as THREE from 'three';
 
-const MAX = 400;
+export function createEffects(scene, rng) {
+  const pool = [];
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.4, 1.4, 60, 12, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xffd23e, transparent: true, opacity: 0.45, side: THREE.DoubleSide,
+    }),
+  );
+  beam.position.y = 30;
+  beam.visible = false;
+  scene.add(beam);
 
-export function createParticleField(scene, rng) {
-  const geo = new THREE.BufferGeometry();
-  const positions = new Float32Array(MAX * 3);
-  const colors = new Float32Array(MAX * 3);
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const mat = new THREE.PointsMaterial({ size: 0.55, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false });
-  const points = new THREE.Points(geo, mat);
-  points.frustumCulled = false;
-  scene.add(points);
-  const parts = [];
-  for (let i = 0; i < MAX; i++) {
-    parts.push({ alive: false, x: 0, y: -100, z: 0, vx: 0, vy: 0, vz: 0, life: 0, max: 1 });
-    positions[i * 3 + 1] = -100;
-  }
-  return { points, positions, colors, parts, cursor: 0, rng };
-}
-
-function spawn(fx, x, y, z, vx, vy, vz, life, r, g, b) {
-  const p = fx.parts[fx.cursor];
-  fx.cursor = (fx.cursor + 1) % MAX;
-  p.alive = true;
-  p.x = x;
-  p.y = y;
-  p.z = z;
-  p.vx = vx;
-  p.vy = vy;
-  p.vz = vz;
-  p.life = life;
-  p.max = life;
-  const i = fx.parts.indexOf(p);
-  fx.colors[i * 3] = r;
-  fx.colors[i * 3 + 1] = g;
-  fx.colors[i * 3 + 2] = b;
-}
-
-export function burstSparks(fx, pos) {
-  for (let i = 0; i < 14; i++) {
-    const a = fx.rng.angle();
-    const s = 3 + fx.rng.next() * 5;
-    spawn(fx, pos.x, 1.2, pos.z, Math.sin(a) * s, 2 + fx.rng.next() * 4, Math.cos(a) * s, 0.5, 1, 0.8, 0.2);
-  }
-}
-
-export function burstSmoke(fx, pos) {
-  for (let i = 0; i < 10; i++) {
-    spawn(
-      fx,
-      pos.x + (fx.rng.next() - 0.5) * 2,
-      0.8,
-      pos.z + (fx.rng.next() - 0.5) * 2,
-      (fx.rng.next() - 0.5) * 2,
-      1.5 + fx.rng.next() * 2,
-      (fx.rng.next() - 0.5) * 2,
-      0.9,
-      0.55,
-      0.55,
-      0.55,
-    );
-  }
-}
-
-export function burstGold(fx, pos) {
-  for (let i = 0; i < 16; i++) {
-    const a = fx.rng.angle();
-    spawn(fx, pos.x, 1, pos.z, Math.sin(a) * 2, 3 + fx.rng.next() * 3, Math.cos(a) * 2, 0.7, 1, 0.85, 0.3);
-  }
-}
-
-export function burstConfetti(fx, pos) {
-  const palette = [[1, 0.4, 0.3], [1, 0.85, 0.3], [0.4, 0.8, 1], [0.5, 0.9, 0.5], [0.9, 0.5, 1]];
-  for (let i = 0; i < 30; i++) {
-    const a = fx.rng.angle();
-    const s = 2 + fx.rng.next() * 4;
-    const c = palette[i % palette.length];
-    spawn(fx, pos.x, 1.5, pos.z, Math.sin(a) * s, 4 + fx.rng.next() * 4, Math.cos(a) * s, 1.1, c[0], c[1], c[2]);
-  }
-}
-
-export function stepParticles(fx, dt) {
-  for (let i = 0; i < MAX; i++) {
-    const p = fx.parts[i];
-    if (!p.alive) continue;
-    p.life -= dt;
-    if (p.life <= 0) {
-      p.alive = false;
-      fx.positions[i * 3 + 1] = -100;
-      continue;
+  function spawn(kind, x, y, z) {
+    let mesh = pool.find((m) => !m.visible);
+    if (!mesh) {
+      const geo = kind === 'flash'
+        ? new THREE.SphereGeometry(0.7, 8, 6)
+        : new THREE.BoxGeometry(0.35, 0.35, 0.35);
+      mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true }));
+      scene.add(mesh);
+      pool.push(mesh);
     }
-    p.vy -= 6 * dt;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.z += p.vz * dt;
-    fx.positions[i * 3] = p.x;
-    fx.positions[i * 3 + 1] = p.y;
-    fx.positions[i * 3 + 2] = p.z;
+    const colors = { flash: 0xffd23e, spark: 0xff8a3a, smoke: 0x9aa0a8, pickup: 0x7dff9a };
+    mesh.material.color.setHex(colors[kind] || 0xffffff);
+    mesh.material.opacity = 1;
+    mesh.visible = true;
+    mesh.position.set(x, y, z);
+    mesh.scale.set(1, 1, 1);
+    mesh.userData = { kind, life: kind === 'smoke' ? 1.4 : 0.5, age: 0, vy: kind === 'smoke' ? 1.2 : 2.5 };
+    return mesh;
   }
-  fx.points.geometry.attributes.position.needsUpdate = true;
-  fx.points.geometry.attributes.color.needsUpdate = true;
+
+  const effects = {
+    burst(kind, x, y, z, count = 1) {
+      for (let i = 0; i < count; i++) {
+        spawn(kind, x + rng.range(-0.6, 0.6), y + rng.range(-0.2, 0.6), z + rng.range(-0.6, 0.6));
+      }
+    },
+
+    muzzle(x, y, z) {
+      spawn('flash', x, y, z);
+    },
+
+    setWaypoint(x, z) {
+      beam.visible = true;
+      beam.position.x = x;
+      beam.position.z = z;
+    },
+
+    hideWaypoint() {
+      beam.visible = false;
+    },
+
+    update(dt, simTime) {
+      for (const m of pool) {
+        if (!m.visible) continue;
+        m.userData.age += dt;
+        const t = m.userData.age / m.userData.life;
+        if (t >= 1) {
+          m.visible = false;
+          continue;
+        }
+        m.position.y += m.userData.vy * dt;
+        m.material.opacity = 1 - t;
+        const grow = 1 + t * (m.userData.kind === 'smoke' ? 2.2 : 0.6);
+        m.scale.set(grow, grow, grow);
+      }
+      if (beam.visible) {
+        beam.material.opacity = 0.35 + 0.12 * Math.sin(simTime * 3);
+        beam.rotation.y += dt * 0.8;
+      }
+    },
+  };
+
+  return effects;
 }

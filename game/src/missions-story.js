@@ -1,186 +1,140 @@
-// Cerita: Rae Marlowe, kurir di Solmarina, berutang pada kru marina dan
-// melunasinya lewat kerja. Tiga misi berantai — tiap misi membuka misi
-// berikutnya — dengan beacon waypoint, baris objective di HUD, dan hadiah
-// uang. Misi 2 menanam tiga debitur dan dua preman di dunia; misi 3
-// memaksa pelarian dari polisi. Total hadiah misi: $1.250
-// (250 + 400 + 600), di luar $120 tunai per debitur yang ditagih.
-// Selama Rush Hour, semua payout naik 50% — dunia yang membayarnya,
-// bukan modul ini: ctx.addCash sudah menerapkan pengali event.
+// SOLMARINA — missions and story. Three chained jobs for Rae: a dawn courier
+// run, three debts to collect for Marlo, and a harbour escape. Each step has
+// a waypoint, a payout, and a line of story; Rush Hour pays 50% extra.
 
-import { placePed } from './sidewalk-crowd.js';
+import { CONFIG, MISSION_SPOTS } from './game-config.js';
 
-export const MISSION_DEFS = [
-  {
-    id: 1,
-    title: 'Misi 1 — Kurir Pagi',
-    intro: 'Ambil paket di Pasar Ikan, antar ke Menara Kaca. Naik mobil, ikuti panah kuning.',
-    reward: 250,
-  },
-  {
-    id: 2,
-    title: 'Misi 2 — Tagihan Marina',
-    intro: 'Tiga orang berutang pada kru marina. Tagih mereka — yang terakhir dijaga dua preman.',
-    reward: 400,
-  },
-  {
-    id: 3,
-    title: 'Misi 3 — Pelarian Pelabuhan',
-    intro: 'Polisi mengincarmu. Curi mobil dan kabur ke gudang tua di dermaga barat.',
-    reward: 600,
-  },
-];
+export function createMissions(world, hooks) {
+  const spots = MISSION_SPOTS;
+  const defs = CONFIG.missions.list;
 
-export const DEBTOR_CASH = 120;
-
-const PICKUP = { x: 75, z: -75 }; // Pasar Ikan
-const DROPOFF = { x: -75, z: 75 }; // Menara Kaca
-const DEBTORS = [
-  { x: 0, z: -75 },
-  { x: 75, z: 0 },
-  { x: -75, z: -150 },
-];
-const HIDEOUT = { x: -168, z: 40 }; // gudang dermaga barat
-
-export function createStory() {
-  return {
-    index: 0, // 0-based ke MISSION_DEFS; 3 berarti cerita selesai
-    stage: 0, // langkah per misi
-    done: false,
+  const missions = {
+    index: 0,
+    step: 0,
     collected: 0,
-    waypoint: { ...PICKUP },
-    objective: MISSION_DEFS[0].intro,
-    planted: false,
-  };
-}
+    debtsDone: [false, false, false],
+    hasPackage: false,
+    earned: 0,
+    done: false,
+    story: 'Rae baru tiba di Solmarina. Marlo menunggunya di ujung telepon.',
+    objective: null,
 
-export function storyTitle(story) {
-  if (story.index >= MISSION_DEFS.length) return 'Cerita selesai';
-  return MISSION_DEFS[story.index].title;
-}
+    get current() {
+      return defs[this.index] || null;
+    },
 
-function setWaypoint(story, point, objective) {
-  story.waypoint = { ...point };
-  story.objective = objective;
-}
+    get totalEarned() {
+      return this.earned;
+    },
 
-function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.z - b.z);
-}
-
-// Menaruh debitur dan preman untuk misi 2. Dipanggil sekali, saat masuk.
-export function plantDebtors(peds) {
-  const free = peds.filter((p) => p.role === null).slice(0, 5);
-  free.forEach((ped, i) => {
-    if (i < 3) {
-      ped.role = 'debtor';
-      ped.guarded = i === 2; // debitur ketiga dijaga preman
-      ped.collected = false;
-      ped.state = 'walk';
-      placePed(ped, DEBTORS[i].x, DEBTORS[i].z, 0, 'walk');
-    } else {
-      ped.role = 'guard';
-      ped.health = 150;
-      ped.state = 'walk';
-      placePed(ped, DEBTORS[2].x + (i === 3 ? 4 : -4), DEBTORS[2].z + 3, 0, 'walk');
-    }
-  });
-  return free;
-}
-
-/**
- * Majukan misi aktif. `ctx` membawa dunia yang hidup:
- * { pos, inCar, interact, peds, addWanted, addCash, toast,
- *   pickupSound, missionSound }.
- * Mengembalikan 'complete' saat satu misi selesai, 'story' saat ketiganya
- * selesai, atau null.
- */
-export function stepStory(story, ctx) {
-  if (story.index >= MISSION_DEFS.length) return null;
-  const def = MISSION_DEFS[story.index];
-
-  if (story.index === 0) {
-    if (story.stage === 0) {
-      setWaypoint(story, PICKUP, 'Ambil paket di Pasar Ikan (tanda kuning).');
-      story.stage = 1;
-    } else if (story.stage === 1) {
-      if (distance(ctx.pos, PICKUP) < 6) {
-        story.stage = 2;
-        ctx.toast('Paket diambil! Antar ke Menara Kaca di barat daya.');
-        ctx.pickupSound();
-        setWaypoint(story, DROPOFF, 'Antar paket ke Menara Kaca.');
+    // The active waypoint: where the beam points and the minimap marks.
+    waypoint() {
+      if (this.done) return null;
+      if (this.index === 0) {
+        return this.step === 0 ? spots.packagePickup : spots.packageDrop;
       }
-    } else if (story.stage === 2) {
-      if (distance(ctx.pos, DROPOFF) < 6) return finishMission(story, ctx, def);
-    }
-  } else if (story.index === 1) {
-    if (!story.planted) {
-      plantDebtors(ctx.peds);
-      story.planted = true;
-      setWaypoint(story, DEBTORS[0], 'Tagih utang: 0/3 orang (tekan E di dekat mereka).');
-    }
-    const debtor = ctx.peds.find((p) => p.role === 'debtor' && !p.collected);
-    if (debtor) {
-      setWaypoint(story, debtor.pos, `Tagih utang: ${story.collected}/3 orang (tekan E di dekat mereka).`);
-    }
-    if (ctx.interact) {
-      for (const ped of ctx.peds) {
-        if (ped.role === 'debtor' && !ped.collected && distance(ctx.pos, ped.pos) < 3.2) {
-          const guardsUp = ctx.peds.some((g) => g.role === 'guard' && g.state !== 'down');
-          if (guardsUp && ped.guarded) {
-            ctx.toast('Preman itu menjaga dia — jatuhkan mereka dulu (F untuk memukul)!');
+      if (this.index === 1) {
+        for (let i = 0; i < spots.debts.length; i++) {
+          if (!this.debtsDone[i]) return spots.debts[i];
+        }
+        return spots.debts[2];
+      }
+      return spots.harborEscape;
+    },
+
+    objectiveText() {
+      if (this.done) return 'Semua misi selesai — Solmarina milikmu, Rae.';
+      if (this.index === 0) {
+        return this.step === 0 ? 'Ambil paket di sudut barat kota' : 'Antar paket ke titik selatan';
+      }
+      if (this.index === 1) {
+        const left = this.debtsDone.filter((d) => !d).length;
+        return `Tagih utang Marlo — tersisa ${left} orang`;
+      }
+      return 'Kabur ke kapal di pelabuhan timur';
+    },
+
+    refreshObjective() {
+      const w = this.waypoint();
+      this.objective = w ? { ...w, text: this.objectiveText() } : null;
+    },
+
+    pay(amount) {
+      const bonus = hooks.rushBonus ? hooks.rushBonus() : 1;
+      const total = Math.round(amount * bonus);
+      this.earned += total;
+      if (hooks.onPay) hooks.onPay(total, bonus > 1);
+      return total;
+    },
+
+    advanceMission() {
+      this.index += 1;
+      this.step = 0;
+      this.hasPackage = false;
+      if (this.index >= defs.length) {
+        this.done = true;
+        this.story = 'Rae lepas landas dari Solmarina — $1.250 di saku, kota di belakang.';
+        if (hooks.onAllDone) hooks.onAllDone();
+      } else {
+        this.story = defs[this.index].blurb;
+        if (hooks.onMissionStart) hooks.onMissionStart(defs[this.index]);
+      }
+      this.refreshObjective();
+    },
+
+    // Called every fixed step; E near the waypoint completes the step.
+    update(dt, player, interactPressed) {
+      if (this.done) return;
+      const w = this.waypoint();
+      if (!w) return;
+      const d = Math.hypot(player.x - w.x, player.z - w.z);
+      if (d > 4.5 || !interactPressed) return;
+
+      if (this.index === 0 && this.step === 0) {
+        this.hasPackage = true;
+        this.step = 1;
+        this.story = 'Paket di tangan. Jangan berhenti — antar ke selatan sebelum polisi sadar.';
+        if (hooks.onPickup) hooks.onPickup('Paket kurir');
+      } else if (this.index === 0 && this.step === 1) {
+        this.pay(defs[0].pay);
+        this.story = 'Paket terkirim. $250. Marlo sudah punya kerjaan berikutnya.';
+        this.advanceMission();
+      } else if (this.index === 1) {
+        for (let i = 0; i < spots.debts.length; i++) {
+          if (!this.debtsDone[i] && Math.hypot(player.x - spots.debts[i].x, player.z - spots.debts[i].z) <= 4.5) {
+            this.debtsDone[i] = true;
+            this.collected += spots.debts[i].pay;
+            this.pay(spots.debts[i].pay);
+            this.story = `${spots.debts[i].label} lunas. Sisa ${this.debtsDone.filter((x) => !x).length} utang.`;
+            if (hooks.onCollect) hooks.onCollect(spots.debts[i]);
             break;
           }
-          ped.collected = true;
-          ped.state = 'flee';
-          ped.timer = 5;
-          story.collected += 1;
-          const paid = ctx.addCash(DEBTOR_CASH);
-          ctx.toast(`Utang ditagih! ${story.collected}/3. +$${paid} tunai.`);
-          ctx.pickupSound();
-          if (story.collected >= 3) return finishMission(story, ctx, def);
-          break;
         }
+        if (this.debtsDone.every(Boolean)) {
+          this.story = 'Semua utang lunas — $400 total. Sekarang kabur sebelum gengnya datang.';
+          this.advanceMission();
+        }
+      } else if (this.index === 2) {
+        this.pay(defs[2].pay);
+        this.story = 'Rae naik ke kapal. Pelabuhan mengecil di belakang — selesai.';
+        this.advanceMission();
       }
-    }
-  } else if (story.index === 2) {
-    if (story.stage === 0) {
-      story.stage = 1;
-      ctx.addWanted(3);
-      ctx.toast('WANTED 3 — kabur ke gudang dermaga!');
-      setWaypoint(story, HIDEOUT, 'Kabur ke gudang tua di dermaga barat. Polisi mengejarmu!');
-    }
-    if (distance(ctx.pos, HIDEOUT) < 7) {
-      if (ctx.inCar) return finishMission(story, ctx, def);
-      story.objective = 'Masuk mobil dulu — gudang hanya terbuka untuk mobil.';
-    }
-  }
-  return null;
-}
+      this.refreshObjective();
+    },
 
-function finishMission(story, ctx, def) {
-  const paid = ctx.addCash(def.reward);
-  ctx.missionSound();
-  ctx.toast(`${def.title} selesai! +$${paid}`);
-  story.index += 1;
-  story.stage = 0;
-  story.collected = 0;
-  story.planted = false;
-  if (story.index >= MISSION_DEFS.length) {
-    story.done = true;
-    story.objective = 'Cerita selesai — Solmarina milikmu. Jelajahi sesukamu!';
-    return 'story';
-  }
-  const next = MISSION_DEFS[story.index];
-  story.objective = next.intro;
-  if (story.index === 0) setWaypoint(story, PICKUP, next.intro);
-  return 'complete';
-}
+    reset() {
+      this.index = 0;
+      this.step = 0;
+      this.collected = 0;
+      this.debtsDone = [false, false, false];
+      this.hasPackage = false;
+      this.earned = 0;
+      this.done = false;
+      this.story = 'Rae baru tiba di Solmarina. Marlo menunggunya di ujung telepon.';
+      this.refreshObjective();
+    },
+  };
 
-export function beginStoryAt(story, index) {
-  story.index = index;
-  story.stage = 0;
-  story.collected = 0;
-  story.planted = false;
-  story.done = false;
-  if (index === 0) setWaypoint(story, PICKUP, MISSION_DEFS[0].intro);
+  missions.refreshObjective();
+  return missions;
 }

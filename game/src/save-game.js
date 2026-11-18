@@ -1,49 +1,65 @@
-// Save / load: progres Rae (uang, total penghasilan, misi, kesehatan,
-// posisi) tersimpan di localStorage. Kunci v2 dipakai sekarang; save v1
-// lama masih dibaca sekali lalu dimigrasi, supaya pemain lama tidak
-// kehilangan progres saat update.
+// SOLMARINA — save and load. One small JSON blob in localStorage holds Rae's
+// money, mission progress and position, so a session survives a closed tab.
+// Storage is best-effort: a blocked store never stops the game.
 
-import { PLAYER, SAVE_KEY, SAVE_KEY_LEGACY } from './game-config.js';
-import { beginStoryAt } from './missions-story.js';
+const SAVE_KEY = 'solmarina-save-v1';
 
-export function saveProgress(world) {
-  try {
-    window.localStorage.setItem(
-      SAVE_KEY,
-      JSON.stringify({
-        version: 2,
-        money: Math.floor(world.player.money),
-        totalEarned: Math.floor(world.player.totalEarned),
-        mission: world.story.index,
-        health: world.player.health,
-        x: world.player.pos.x,
-        z: world.player.pos.z,
-      }),
-    );
-  } catch {
-    // Storage mati: permainan jalan, hanya tidak tersimpan.
+export function createSave() {
+  function read() {
+    try {
+      const raw = window.localStorage.getItem(SAVE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== 'object') return null;
+      return data;
+    } catch (err) {
+      void err;
+      return null;
+    }
   }
-}
 
-export function loadProgress() {
-  try {
-    const raw = window.localStorage.getItem(SAVE_KEY) ?? window.localStorage.getItem(SAVE_KEY_LEGACY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
+  function write(data) {
+    try {
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      return true;
+    } catch (err) {
+      void err;
+      return false;
+    }
   }
-}
 
-export function applyProgress(world, save) {
-  if (!save) return;
-  world.player.money = save.money ?? 0;
-  world.player.totalEarned = save.totalEarned ?? save.money ?? 0;
-  world.player.health = save.health ?? PLAYER.health;
-  if (typeof save.x === 'number' && typeof save.z === 'number') {
-    world.player.pos.x = save.x;
-    world.player.pos.z = save.z;
-  }
-  if (typeof save.mission === 'number' && save.mission > 0 && save.mission < 3) {
-    beginStoryAt(world.story, save.mission);
-  }
+  return {
+    key: SAVE_KEY,
+
+    save(state) {
+      return write({
+        version: 1,
+        savedAt: Date.now(),
+        earned: state.earned,
+        missionIndex: state.missionIndex,
+        debtsDone: state.debtsDone,
+        playerX: state.playerX,
+        playerZ: state.playerZ,
+        health: state.health,
+      });
+    },
+
+    load() {
+      return read();
+    },
+
+    hasSave() {
+      return read() !== null;
+    },
+
+    clear() {
+      try {
+        window.localStorage.removeItem(SAVE_KEY);
+        return true;
+      } catch (err) {
+        void err;
+        return false;
+      }
+    },
+  };
 }

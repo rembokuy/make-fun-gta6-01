@@ -1,110 +1,173 @@
-// Combat: tinju (F) dan pistol (klik mouse). Pukulan mengenai orang
-// terdekat di depan Rae; tembakan mengenai orang terdekat kira-kira di
-// garis bidik kamera. Preman membalas dengan pukulan yang lambat dan
-// mudah ditebak. Memukul orang biasa adalah kejahatan — wanted naik.
+// SOLMARINA — street combat. Rae punches up close and fires her pistol at
+// range; the Beach Gang thugs fight back, go down after enough hits, and get
+// back up again. Every shot and every punch feeds the wanted system.
 
-import { PLAYER } from './game-config.js';
+import * as THREE from 'three';
+import { CONFIG } from './game-config.js';
 
-export function createCombatState() {
-  return {
-    punchTimer: 0,
-    shootTimer: 0,
-    muzzleFlash: 0,
-    shotsFired: 0,
-    punchesLanded: 0,
+export function createCombat(scene, world, rng, hooks) {
+  const thugs = [];
+
+  function makeThugMesh() {
+    const group = new THREE.Group();
+    const legs = new THREE.Mesh(
+      new THREE.BoxGeometry(0.48, 0.85, 0.34),
+      new THREE.MeshLambertMaterial({ color: 0x1c1c22 }),
+    );
+    legs.position.y = 0.42;
+    group.add(legs);
+    const torso = new THREE.Mesh(
+      new THREE.BoxGeometry(0.72, 0.85, 0.4),
+      new THREE.MeshLambertMaterial({ color: 0x6a3a8a }),
+    );
+    torso.position.y = 1.28;
+    group.add(torso);
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28, 10, 8),
+      new THREE.MeshLambertMaterial({ color: 0xd8a878 }),
+    );
+    head.position.y = 2.0;
+    group.add(head);
+    return group;
+  }
+
+  function spawnThug(x, z) {
+    const mesh = makeThugMesh();
+    mesh.position.set(x, 0, z);
+    scene.add(mesh);
+    const thug = { mesh, x, z, heading: rng.range(0, Math.PI * 2), hp: 100, down: false, downTimer: 0, punchTimer: 0 };
+    thugs.push(thug);
+    return thug;
+  }
+
+  // Four thugs hold the beach camp; two more drift near the debt spots.
+  const camp = world.spots.thugCamp;
+  for (let i = 0; i < 4; i++) spawnThug(camp.x + rng.range(-8, 8), camp.z + rng.range(-8, 8));
+  for (const debt of world.spots.debts.slice(0, 2)) {
+    spawnThug(debt.x + rng.range(-6, 6), debt.z + rng.range(-6, 6));
+  }
+
+  const combat = {
+    thugs,
+    cooldown: 0,
+
+    spawnThug,
+
+    nearestThug(x, z, radius) {
+      let best = null;
+      let bestD = radius;
+      for (const t of thugs) {
+        if (t.down) continue;
+        const d = Math.hypot(t.x - x, t.z - z);
+        if (d < bestD) {
+          bestD = d;
+          best = t;
+        }
+      }
+      return best;
+    },
+
+    damageThug(thug, amount) {
+      thug.hp -= amount;
+      if (thug.hp <= 0) {
+        thug.down = true;
+        thug.downTimer = 8;
+        thug.mesh.rotation.x = Math.PI / 2;
+        thug.mesh.position.y = 0.4;
+        if (hooks.onThugDown) hooks.onThugDown(thug);
+      }
+    },
+
+    punch(player, crowd) {
+      const thug = this.nearestThug(player.x, player.z, CONFIG.player.punchRange);
+      if (thug) {
+        this.damageThug(thug, CONFIG.player.punchDamage);
+        if (hooks.onPunch) hooks.onPunch(thug);
+        return 'thug';
+      }
+      const ped = crowd ? crowd.nearest(player.x, player.z, CONFIG.player.punchRange) : null;
+      if (ped) {
+        crowd.knockDown(ped);
+        if (hooks.onPunchPed) hooks.onPunchPed(ped);
+        return 'ped';
+      }
+      return null;
+    },
+
+    shoot(player, crowd) {
+      if (this.cooldown > 0) return null;
+      this.cooldown = CONFIG.player.shootCooldown;
+      const range = CONFIG.player.shootRange;
+      const dirX = Math.sin(player.heading);
+      const dirZ = Math.cos(player.heading);
+      let best = null;
+      let bestD = range;
+      let bestKind = null;
+      for (const t of thugs) {
+        if (t.down) continue;
+        const dx = t.x - player.x;
+        const dz = t.z - player.z;
+        const along = dx * dirX + dz * dirZ;
+        const side = Math.abs(dx * dirZ - dz * dirX);
+        if (along > 0 && along < bestD && side < 1.6) {
+          best = t;
+          bestD = along;
+          bestKind = 'thug';
+        }
+      }
+      if (crowd) {
+        for (const w of crowd.walkers) {
+          if (w.down) continue;
+          const dx = w.x - player.x;
+          const dz = w.z - player.z;
+          const along = dx * dirX + dz * dirZ;
+          const side = Math.abs(dx * dirZ - dz * dirX);
+          if (along > 0 && along < bestD && side < 1.6) {
+            best = w;
+            bestD = along;
+            bestKind = 'ped';
+          }
+        }
+      }
+      const muzzle = { x: player.x + dirX * 1.2, y: 1.5, z: player.z + dirZ * 1.2 };
+      if (bestKind === 'thug') this.damageThug(best, CONFIG.player.shootDamage);
+      if (bestKind === 'ped') crowd.knockDown(best);
+      if (hooks.onShoot) hooks.onShoot({ muzzle, hit: best, kind: bestKind, distance: bestD });
+      return { muzzle, hit: best, kind: bestKind };
+    },
+
+    update(dt, player, crowd) {
+      if (this.cooldown > 0) this.cooldown -= dt;
+      for (const t of thugs) {
+        if (t.down) {
+          t.downTimer -= dt;
+          if (t.downTimer <= 0) {
+            t.down = false;
+            t.hp = 100;
+            t.mesh.rotation.x = 0;
+            t.mesh.position.y = 0;
+          }
+          continue;
+        }
+        t.punchTimer -= dt;
+        const d = Math.hypot(t.x - player.x, t.z - player.z);
+        if (d < 26 && !player.inVehicle) {
+          // Close in and swing when in reach.
+          const want = Math.atan2(player.x - t.x, player.z - t.z);
+          t.heading = want;
+          if (d > 1.8) {
+            t.x += Math.sin(want) * 3.4 * dt;
+            t.z += Math.cos(want) * 3.4 * dt;
+          } else if (t.punchTimer <= 0) {
+            t.punchTimer = 1.1;
+            if (hooks.onThugHit) hooks.onThugHit(t, 8);
+          }
+          t.mesh.position.set(t.x, 0, t.z);
+          t.mesh.rotation.y = t.heading;
+        }
+      }
+    },
   };
-}
 
-function angleTo(from, heading, to) {
-  const dx = to.x - from.x;
-  const dz = to.z - from.z;
-  const target = Math.atan2(dx, dz);
-  let diff = target - heading;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  return { dist: Math.hypot(dx, dz), diff };
-}
-
-// Orang hidup terdekat di dalam `range` dan `arc` radian dari `heading`.
-export function nearestInArc(peds, from, heading, range, arc) {
-  let best = null;
-  let bestD = Infinity;
-  for (const ped of peds) {
-    if (ped.state === 'down') continue;
-    const { dist, diff } = angleTo(from, heading, ped.pos);
-    // Jarak nol (tepat di atas pemain) dihitung lurus ke depan: sudut ke
-    // target berjarak nol tidak ada artinya.
-    if (dist < range && (dist < 0.35 || Math.abs(diff) < arc) && dist < bestD) {
-      best = ped;
-      bestD = dist;
-    }
-  }
-  return best;
-}
-
-function knockDown(ped) {
-  ped.state = 'down';
-  ped.health = 0;
-}
-
-export function stepCombat(combat, dt, ctx) {
-  combat.punchTimer = Math.max(0, combat.punchTimer - dt);
-  combat.shootTimer = Math.max(0, combat.shootTimer - dt);
-  combat.muzzleFlash = Math.max(0, combat.muzzleFlash - dt * 6);
-
-  if (ctx.punch && combat.punchTimer <= 0 && !ctx.inCar) {
-    combat.punchTimer = PLAYER.punchCooldown;
-    ctx.punchSound();
-    const target = nearestInArc(ctx.peds, ctx.pos, ctx.heading, PLAYER.punchRange, 0.9);
-    if (target) {
-      target.health -= PLAYER.punchDamage;
-      target.state = 'flee';
-      target.timer = 2;
-      target.heading = Math.atan2(target.pos.x - ctx.pos.x, target.pos.z - ctx.pos.z);
-      ctx.spark(target.pos);
-      combat.punchesLanded += 1;
-      if (target.health <= 0) knockDown(target);
-      if (target.role === null) ctx.crime(1); // memukul orang biasa
-    }
-  }
-
-  if (ctx.shoot && combat.shootTimer <= 0 && !ctx.inCar) {
-    combat.shootTimer = 0.35;
-    combat.muzzleFlash = 1;
-    combat.shotsFired += 1;
-    ctx.gunSound();
-    ctx.crime(2);
-    const target = nearestInArc(ctx.peds, ctx.pos, ctx.heading, 40, 0.22);
-    if (target) {
-      target.health -= 60;
-      ctx.spark(target.pos);
-      if (target.health <= 0) knockDown(target);
-      else {
-        target.state = 'flee';
-        target.timer = 3;
-        target.heading = Math.atan2(target.pos.x - ctx.pos.x, target.pos.z - ctx.pos.z);
-      }
-    }
-  }
-
-  // Preman membalas saat Rae dekat: mendekat, berhenti di jarak pukul,
-  // lalu memukul dengan jeda — tidak pernah berjalan menembus Rae.
-  for (const ped of ctx.peds) {
-    if (ped.role !== 'guard' || ped.state === 'down') continue;
-    ped.attackTimer -= dt;
-    const d = Math.hypot(ped.pos.x - ctx.pos.x, ped.pos.z - ctx.pos.z);
-    if (d < 6 && !ctx.inCar) {
-      ped.heading = Math.atan2(ctx.pos.x - ped.pos.x, ctx.pos.z - ped.pos.z);
-      if (d > 1.9) {
-        ped.pos.x += Math.sin(ped.heading) * 2.6 * dt;
-        ped.pos.z += Math.cos(ped.heading) * 2.6 * dt;
-      }
-      ped.state = 'walk';
-      if (d < 1.8 && ped.attackTimer <= 0) {
-        ped.attackTimer = 1.1;
-        ctx.hurtPlayer(8);
-        ctx.punchSound();
-      }
-    }
-  }
+  return combat;
 }
