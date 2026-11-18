@@ -1,8 +1,8 @@
 # SOLMARINA — Sun Coast Getaway
 
-[![competition](https://img.shields.io/badge/make.fun-gta6--01-ff6b35)](https://make.fun)
-[![engine](https://img.shields.io/badge/engine-three.js%200.160-000000)](https://threejs.org)
-[![missions](https://img.shields.io/badge/missions-3%20story-22c55e)](https://make.fun)
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/rembokuy/make-fun-gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/rembokuy/make-fun-gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
 Rae baru tiba di Solmarina — kota pesisir yang sunyi di permukaan dan berutang di mana-mana — dengan satu koper dan satu nama di buku Marlo. Antar paket fajar, tagih tiga utang, lalu kabur lewat pelabuhan timur sebelum lima bintang buronan menutup seluruh kota. Di antara misi, kota ini hidup sendiri: 14 mobil lalu lintas dan 26 pejalan kaki di trotoar, mobil parkir yang bisa dicuri, preman pantai yang bisa diajak berantem, dan polisi yang mengejar makin keras setiap kali Rae berbuat onar.
 
