@@ -1,6 +1,7 @@
-// Keyboard + mouse input. Keys are held in a set; discrete actions
-// (interact, punch, shoot, pause, confirm) are consumed once per press
-// through takeActions(), so holding a key never double-fires a menu.
+// Input keyboard + mouse. Tombol ditahan di dalam set; aksi diskret
+// (interact, pukul, tembak, jeda, konfirmasi, klakson) dikonsumsi sekali
+// per tekan lewat takeActions(), jadi menahan tombol tidak pernah
+// menembak dua kali ke menu.
 
 export const ACTION_INTERACT = 1;
 export const ACTION_PUNCH = 2;
@@ -19,7 +20,7 @@ const KEY_ACTIONS = {
   KeyH: ACTION_HORN,
 };
 
-export function createInput(canvas) {
+export function createKeyboardInput(canvas) {
   const keys = new Set();
   let queued = 0;
   let mouseDown = false;
@@ -28,6 +29,7 @@ export function createInput(canvas) {
   let dragging = false;
   let lastX = 0;
   let lastY = 0;
+  let wheel = 0;
 
   function onKeyDown(event) {
     if (event.repeat) return;
@@ -57,6 +59,9 @@ export function createInput(canvas) {
     lastX = event.clientX;
     lastY = event.clientY;
   }
+  function onWheel(event) {
+    wheel += event.deltaY;
+  }
   function onBlur() {
     keys.clear();
     mouseDown = false;
@@ -68,20 +73,21 @@ export function createInput(canvas) {
   canvas.addEventListener('mousedown', onMouseDown);
   window.addEventListener('mouseup', onMouseUp);
   window.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('wheel', onWheel, { passive: true });
   window.addEventListener('blur', onBlur);
 
   return {
     held(code) {
       return keys.has(code);
     },
-    /** -1..1 steering / strafe intent from A/D or arrow keys. */
+    /** Niat belok / strafe -1..1 dari A/D atau panah. */
     steer() {
       let value = 0;
       if (keys.has('KeyA') || keys.has('ArrowLeft')) value -= 1;
       if (keys.has('KeyD') || keys.has('ArrowRight')) value += 1;
       return value;
     },
-    /** -1..1 forward intent from W/S or arrow keys. */
+    /** Niat maju -1..1 dari W/S atau panah. */
     throttle() {
       let value = 0;
       if (keys.has('KeyW') || keys.has('ArrowUp')) value += 1;
@@ -94,16 +100,22 @@ export function createInput(canvas) {
     mouseDown() {
       return mouseDown;
     },
-    /** Mouse drag since the last call, in pixels; resets each call. */
+    /** Drag mouse sejak panggilan terakhir, dalam piksel; reset tiap panggil. */
     takeMouseDelta() {
       const out = { dx: mouseDx, dy: mouseDy };
       mouseDx = 0;
       mouseDy = 0;
       return out;
     },
-    // Consume and return only the bits in `mask` (default: all). The menu
-    // layer takes PAUSE/CONFIRM while the world takes INTERACT/PUNCH/
-    // SHOOT/HORN, so neither layer can eat the other's keypress.
+    /** Scroll sejak panggilan terakhir; reset tiap panggil. */
+    wheelDelta() {
+      const out = wheel;
+      wheel = 0;
+      return out;
+    },
+    // Konsumsi dan kembalikan hanya bit di `mask` (default: semua). Lapisan
+    // menu mengambil PAUSE/CONFIRM sementara dunia mengambil
+    // INTERACT/PUNCH/SHOOT/HORN, jadi keduanya tidak saling memakan tombol.
     takeActions(mask = 0xffff) {
       const out = queued & mask;
       queued &= ~mask;

@@ -1,10 +1,10 @@
-// The renderer: one WebGL canvas, soft shadows, and a third-person
-// camera that trails behind Rae (or the car) at the world's yaw and
-// pitch, easing toward its target so turns feel smooth, not snappy.
+// Renderer: satu kanvas WebGL, bayangan lembut, dan kamera third-person
+// yang membuntuti Rae (atau mobilnya) pada yaw dan pitch dunia, meluncur
+// ke targetnya supaya belokan terasa halus, bukan menyentak.
 
 import * as THREE from 'three';
 
-export function createRenderer(canvas) {
+export function createSceneRenderer(canvas) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
@@ -29,8 +29,8 @@ export function createRenderer(canvas) {
     renderer,
     scene,
     camera,
-    // Follow the player: camera sits behind the world's yaw, above the
-    // pitch, looking slightly ahead of the player.
+    // Membuntuti pemain: kamera duduk di belakang yaw dunia, setinggi
+    // pitch, melihat sedikit ke depan pemain.
     follow(world, dt) {
       const player = world.player;
       const yaw = world.cameraYaw;
@@ -50,6 +50,27 @@ export function createRenderer(canvas) {
       camTarget.x += (lookX - camTarget.x) * Math.min(1, dt * 10);
       camTarget.y += (1.6 - camTarget.y) * Math.min(1, dt * 10);
       camTarget.z += (lookZ - camTarget.z) * Math.min(1, dt * 10);
+      camera.position.copy(camPos);
+      camera.lookAt(camTarget);
+    },
+    // Jepret kamera ke posisi ikutannya seketika — dipakai staging
+    // screenshot supaya frame pertama sudah final, bukan masih meluncur.
+    snap(world) {
+      const player = world.player;
+      const yaw = world.cameraYaw;
+      const dist = world.cameraDist;
+      const height = 2.2 + Math.sin(world.cameraPitch) * dist;
+      const back = Math.cos(world.cameraPitch) * dist;
+      camPos.set(
+        player.pos.x - Math.sin(yaw) * back,
+        height,
+        player.pos.z - Math.cos(yaw) * back,
+      );
+      camTarget.set(
+        player.pos.x + Math.sin(yaw) * 2,
+        1.6,
+        player.pos.z + Math.cos(yaw) * 2,
+      );
       camera.position.copy(camPos);
       camera.lookAt(camTarget);
     },

@@ -1,31 +1,33 @@
-// The world: one state object that owns the city, the player, the cars,
-// the crowds, the police, the missions, the combat and the particles,
-// and advances all of them in fixed steps. main.js owns the screens and
-// the render loop; this file owns the rules.
+// Dunia: satu objek state yang memiliki kota, pemain, mobil, kerumunan,
+// polisi, misi, combat, partikel, dan Rush Hour — dan memajukan semuanya
+// dalam langkah tetap. game-main.js memiliki layar dan loop render;
+// file ini memiliki aturannya.
 
-import * as THREE from 'three';
-import { CITY, PLAYER, SAVE_KEY, STEP } from './config.js';
-import { createRandom } from './random.js';
-import { createCity, collideBuildings } from './city.js';
-import { makePlayerMesh, updatePlayerOnFoot, setPlayerGunVisible } from './player.js';
-import { createCar, driveCar, makeCarMesh, randomCarColor, syncCarMesh, carDistance } from './vehicles.js';
-import { createTraffic, updateTraffic } from './traffic.js';
-import { createPedestrians, updatePedestrians } from './pedestrians.js';
-import { createPolice, addWanted, updatePolice } from './police.js';
-import { createMissions, updateMissions, missionTitle, startMission } from './missions.js';
-import { createCombat, updateCombat } from './combat.js';
-import { createEffects, updateEffects, burstSparks, burstSmoke, burstGold } from './effects.js';
-import { createAudio } from './audio.js';
-import { ACTION_INTERACT, ACTION_PUNCH, ACTION_SHOOT, ACTION_HORN } from './input.js';
+import { CITY, PLAYER, STEP } from './game-config.js';
+import { createRandom } from './seeded-random.js';
+import { buildCoastalCity, pushOutOfBuildings } from './coastal-city.js';
+import { makePlayerMesh, stepPlayerOnFoot, setPlayerGunVisible, applyCelebratePose } from './player-character.js';
+import { driveCar, syncCar } from './driveable-vehicles.js';
+import { spawnStreetTraffic, stepTraffic } from './street-traffic.js';
+import { buildCrowd, stepCrowd } from './sidewalk-crowd.js';
+import { createWantedPolice, raiseWanted, stepPolice } from './wanted-police.js';
+import { beginStoryAt, createStory, stepStory, storyTitle } from './missions-story.js';
+import { createCombatState, stepCombat } from './street-combat.js';
+import { burstConfetti, burstGold, burstSmoke, burstSparks, createParticleField, stepParticles } from './visual-effects.js';
+import { createSynthAudio } from './synth-audio.js';
+import { createRushHour, collideRoadblocks, rushPayoutMultiplier, rushSecondsUntilNext, stepRushHour } from './rush-hour.js';
+import { saveProgress } from './save-game.js';
+import { ACTION_HORN, ACTION_INTERACT, ACTION_PUNCH, ACTION_SHOOT } from './keyboard-input.js';
 
-export function createWorld(scene, seed) {
+export function createSolmarina(scene, seed) {
   const rng = createRandom(seed);
-  const city = createCity(scene, rng);
-  const audio = createAudio();
-  const traffic = createTraffic(scene, rng);
-  const peds = createPedestrians(scene, rng);
-  const police = createPolice(scene);
-  const effects = createEffects(scene);
+  const city = buildCoastalCity(scene, rng);
+  const audio = createSynthAudio();
+  const traffic = spawnStreetTraffic(scene, rng);
+  const crowd = buildCrowd(scene, rng);
+  const wanted = createWantedPolice(scene, rng);
+  const particles = createParticleField(scene, rng);
+  const rush = createRushHour(scene);
 
   const playerMesh = makePlayerMesh();
   scene.add(playerMesh);
@@ -36,9 +38,11 @@ export function createWorld(scene, seed) {
     walkPhase: 0,
     health: PLAYER.health,
     money: 0,
+    totalEarned: 0,
     car: null,
     dead: false,
     busted: false,
+    celebrateTimer: 0,
   };
   playerMesh.position.set(player.pos.x, 0, player.pos.z);
 
@@ -48,21 +52,26 @@ export function createWorld(scene, seed) {
     city,
     audio,
     traffic,
-    peds,
-    police,
-    effects,
+    crowd,
+    peds: crowd, // alias: misi & combat membaca daftar yang sama
+    wanted,
+    police: wanted, // alias untuk staging / play-test
+    particles,
+    effects: particles, // alias
+    rush,
     player,
-    missions: createMissions(),
-    combat: createCombat(),
+    story: createStory(),
+    missions: null, // diisi di bawah (alias story)
+    combat: createCombatState(),
     cameraYaw: Math.PI,
     cameraPitch: 0.32,
     cameraDist: 11,
     time: 0,
-    toastQueue: [],
     saveTimer: 0,
     storyDone: false,
-    onEvent: null, // main.js sets this: (type, payload) => void
+    onEvent: null, // game-main.js memasang: (type, payload) => void
   };
+  world.missions = world.story;
   return world;
 }
 
@@ -74,7 +83,7 @@ function toast(world, text) {
   emit(world, 'toast', text);
 }
 
-export function nearestStealableCar(world, maxDist) {
+export function nearestStealable(world, maxDist) {
   let best = null;
   let bestD = maxDist;
   const all = [...world.traffic.parked, ...world.traffic.cars];
@@ -93,7 +102,7 @@ function enterCar(world, car) {
   const player = world.player;
   const wasParked = car.driver === null;
   if (car.driver === 'traffic') {
-    // Yank the driver out: the car leaves the traffic flow.
+    // Tarik sopir keluar: mobil itu keluar dari arus traffic.
     const idx = world.traffic.cars.indexOf(car);
     if (idx >= 0) world.traffic.cars.splice(idx, 1);
     toast(world, 'Kamu membajak mobil itu!');
@@ -105,7 +114,7 @@ function enterCar(world, car) {
   car.driver = 'player';
   player.car = car;
   player.mesh.visible = false;
-  addWanted(world.police, 1);
+  raiseWanted(world.wanted, 1);
   world.audio.setEngine(0, true);
 }
 
@@ -121,7 +130,7 @@ function exitCar(world) {
   player.pos.x = car.pos.x + side.x * 2.6;
   player.pos.z = car.pos.z + side.z * 2.6;
   player.heading = car.heading;
-  collideBuildings(world.city.colliders, player.pos, PLAYER.radius);
+  pushOutOfBuildings(world.city.colliders, player.pos, PLAYER.radius);
   world.audio.setEngine(0, false);
 }
 
@@ -136,51 +145,15 @@ function hurtPlayer(world, amount) {
   }
 }
 
-function saveGame(world) {
-  try {
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify({
-      money: Math.floor(world.player.money),
-      mission: world.missions.index,
-      health: world.player.health,
-      x: world.player.pos.x,
-      z: world.player.pos.z,
-    }));
-  } catch {
-    // Storage off: the run just does not persist.
-  }
-}
-
-export function loadSave() {
-  try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function applySave(world, save) {
-  if (!save) return;
-  world.player.money = save.money ?? 0;
-  world.player.health = save.health ?? PLAYER.health;
-  if (typeof save.x === 'number' && typeof save.z === 'number') {
-    world.player.pos.x = save.x;
-    world.player.pos.z = save.z;
-  }
-  if (typeof save.mission === 'number' && save.mission > 0 && save.mission < 3) {
-    startMission(world.missions, save.mission);
-  }
-}
-
-// One fixed step of the whole simulation.
-export function updateWorld(world, dt, input) {
+// Satu langkah tetap dari seluruh simulasi.
+export function stepSolmarina(world, dt, input) {
   const player = world.player;
-  // Take only the world's own bits; the menu layer takes PAUSE/CONFIRM.
+  // Ambil hanya bit milik dunia; lapisan menu mengambil PAUSE/CONFIRM.
   const actions = input.takeActions(ACTION_INTERACT | ACTION_PUNCH | ACTION_SHOOT | ACTION_HORN);
   const mouse = input.takeMouseDelta();
   world.time += dt;
 
-  // Camera orbit from mouse drag; otherwise it trails behind the heading.
+  // Orbit kamera dari drag mouse; kalau tidak, kamera membuntuti heading.
   if (mouse.dx !== 0 || mouse.dy !== 0) {
     world.cameraYaw -= mouse.dx * 0.005;
     world.cameraPitch = Math.max(0.08, Math.min(1.1, world.cameraPitch + mouse.dy * 0.003));
@@ -188,26 +161,46 @@ export function updateWorld(world, dt, input) {
   const wheel = input.wheelDelta ? input.wheelDelta() : 0;
   if (wheel !== 0) world.cameraDist = Math.max(6, Math.min(18, world.cameraDist + wheel * 0.01));
 
-  // --- Player ------------------------------------------------------------
+  // --- Rush Hour ---------------------------------------------------------
+  stepRushHour(world.rush, dt, {
+    scene: world.scene,
+    rng: world.rng,
+    traffic: world.traffic,
+    city: world.city,
+    playerPos: player.pos,
+    time: world.time,
+    toast: (t) => toast(world, t),
+    horn: () => world.audio.rushHorn(),
+  });
+
+  // --- Pemain -------------------------------------------------------------
   if (!player.dead && !player.busted) {
     if (player.car) {
       const car = player.car;
       driveCar(car, input.throttle(), input.steer(), dt, world.city.colliders, (speed) => {
         world.audio.crash();
-        burstSmoke(world.effects, car.pos);
+        burstSmoke(world.particles, car.pos);
         if (speed > 20) hurtPlayer(world, 4);
       });
+      // Barikade Rush Hour: tabrakan terasa, bukan sekadar hiasan.
+      if (world.rush.roadblocks.length > 0) {
+        const ref = { value: car.speed };
+        if (collideRoadblocks(world.rush, car.pos, 2.1, ref)) {
+          car.speed = ref.value;
+          syncCar(car);
+        }
+      }
       world.audio.setEngine(Math.abs(car.speed) / 38, true);
-      // Running over a pedestrian in the car is a crime.
-      for (const ped of world.peds) {
+      // Menabrak pejalan kaki dengan mobil adalah kejahatan.
+      for (const ped of world.crowd) {
         if (ped.state === 'down') continue;
         const d = Math.hypot(ped.pos.x - car.pos.x, ped.pos.z - car.pos.z);
         if (d < 2.2 && Math.abs(car.speed) > 3) {
           ped.state = 'down';
           ped.health = 0;
-          addWanted(world.police, 1);
+          raiseWanted(world.wanted, 1);
           world.audio.crash();
-          burstSmoke(world.effects, ped.pos);
+          burstSmoke(world.particles, ped.pos);
           toast(world, 'Kamu menabrak pejalan kaki! Wanted naik.');
         }
       }
@@ -217,7 +210,7 @@ export function updateWorld(world, dt, input) {
       player.pos.z = car.pos.z;
       player.heading = car.heading;
     } else {
-      // On foot: camera-relative WASD.
+      // Jalan kaki: WASD relatif kamera.
       const sin = Math.sin(world.cameraYaw);
       const cos = Math.cos(world.cameraYaw);
       const fwd = input.throttle();
@@ -226,81 +219,90 @@ export function updateWorld(world, dt, input) {
         x: sin * fwd + cos * strafe,
         z: cos * fwd - sin * strafe,
       };
-      updatePlayerOnFoot(player, move, input.sprint(), dt, world.city.colliders);
+      stepPlayerOnFoot(player, move, input.sprint(), dt, world.city.colliders);
+      applyCelebratePose(player, dt);
       world.audio.setEngine(0, false);
       if (actions & ACTION_INTERACT) {
-        const car = nearestStealableCar(world, 3.6);
+        const car = nearestStealable(world, 3.6);
         if (car) enterCar(world, car);
       }
     }
   }
 
-  // --- Traffic, pedestrians, police --------------------------------------
-  updateTraffic(world.traffic, dt, world.city.colliders);
+  // --- Traffic, kerumunan, polisi -----------------------------------------
+  stepTraffic(world.traffic, dt, world.rng, world.rush.roadblocks);
   const threats = [];
   if (player.car && Math.abs(player.car.speed) > 4) threats.push({ x: player.car.pos.x, z: player.car.pos.z, danger: 1 });
   for (const car of world.traffic.cars) threats.push({ x: car.pos.x, z: car.pos.z, danger: car.speed > 4 ? 1 : 0 });
-  updatePedestrians(world.peds, dt, world.city.colliders, threats);
+  stepCrowd(world.crowd, dt, world.city.colliders, threats, world.rng);
 
-  updatePolice(world.police, dt, player, world.city.colliders, () => {
+  stepPolice(world.wanted, dt, player, world.city.colliders, world.time, () => {
     if (!player.busted && !player.dead) {
       player.busted = true;
       world.audio.busted();
       emit(world, 'busted', null);
     }
   });
-  const sirenOn = world.police.wanted > 0 && world.police.cops.length > 0;
+  const sirenOn = world.wanted.wanted > 0 && world.wanted.cops.length > 0;
   world.audio.setSiren(sirenOn);
 
-  // --- Combat -------------------------------------------------------------
+  // --- Combat ---------------------------------------------------------------
   const combatCtx = {
     pos: player.pos,
     heading: player.heading,
     inCar: !!player.car,
-    peds: world.peds,
+    peds: world.crowd,
     punch: !!(actions & ACTION_PUNCH),
     shoot: !!(actions & ACTION_SHOOT) || input.mouseDown(),
     punchSound: () => world.audio.punch(),
     gunSound: () => world.audio.gunshot(),
-    spark: (pos) => burstSparks(world.effects, pos),
-    crime: (amount) => addWanted(world.police, amount),
+    spark: (pos) => burstSparks(world.particles, pos),
+    crime: (amount) => raiseWanted(world.wanted, amount),
     hurtPlayer: (amount) => hurtPlayer(world, amount),
   };
-  updateCombat(world.combat, dt, combatCtx);
+  stepCombat(world.combat, dt, combatCtx);
   setPlayerGunVisible(player, combatCtx.shoot && !player.car);
 
-  // --- Missions -----------------------------------------------------------
+  // --- Misi -----------------------------------------------------------------
+  // addCash menerapkan pengali Rush Hour dan mencatat total penghasilan.
   const missionCtx = {
     pos: player.pos,
     inCar: !!player.car,
     interact: !!(actions & ACTION_INTERACT),
-    peds: world.peds,
-    addWanted: (n) => addWanted(world.police, n),
+    peds: world.crowd,
+    addWanted: (n) => raiseWanted(world.wanted, n),
     addCash: (n) => {
-      player.money += n;
+      const paid = Math.round(n * rushPayoutMultiplier(world.rush));
+      player.money += paid;
+      player.totalEarned += paid;
+      return paid;
     },
     toast: (t) => toast(world, t),
     pickupSound: () => {
       world.audio.pickup();
-      burstGold(world.effects, player.pos);
+      burstGold(world.particles, player.pos);
     },
-    missionSound: () => world.audio.missionDone(),
+    missionSound: () => {
+      world.audio.missionDone();
+      burstConfetti(world.particles, player.pos);
+      player.celebrateTimer = 1.6;
+    },
   };
-  const missionResult = updateMissions(world.missions, missionCtx);
+  const missionResult = stepStory(world.story, missionCtx);
   if (missionResult === 'complete') {
-    saveGame(world);
+    saveProgress(world);
   } else if (missionResult === 'story') {
     world.storyDone = true;
-    saveGame(world);
+    saveProgress(world);
     emit(world, 'story', null);
   }
 
-  // --- Effects, beacon, autosave ------------------------------------------
-  updateEffects(world.effects, dt);
+  // --- Partikel, beacon, autosave -------------------------------------------
+  stepParticles(world.particles, dt);
   const beacon = world.city.beacon;
-  if (world.missions.index < 3) {
+  if (world.story.index < 3) {
     beacon.visible = true;
-    beacon.position.set(world.missions.waypoint.x, 0, world.missions.waypoint.z);
+    beacon.position.set(world.story.waypoint.x, 0, world.story.waypoint.z);
     beacon.rotation.y += dt * 0.8;
   } else {
     beacon.visible = false;
@@ -308,39 +310,48 @@ export function updateWorld(world, dt, input) {
   world.saveTimer += dt;
   if (world.saveTimer > 30) {
     world.saveTimer = 0;
-    saveGame(world);
+    saveProgress(world);
   }
 }
 
-export function getHudState(world) {
+export function hudSnapshot(world) {
   const player = world.player;
   return {
     money: player.money,
+    totalEarned: player.totalEarned,
     health: player.health,
-    wanted: world.police.wanted,
-    missionTitle: missionTitle(world.missions),
-    objective: world.missions.objective,
+    wanted: world.wanted.wanted,
+    missionTitle: storyTitle(world.story),
+    objective: world.story.objective,
     inCar: !!player.car,
     speed: player.car ? player.car.speed : 0,
     playerX: player.pos.x,
     playerZ: player.pos.z,
     playerHeading: player.heading,
-    waypoint: world.missions.index < 3 ? world.missions.waypoint : null,
+    waypoint: world.story.index < 3 ? world.story.waypoint : null,
     trafficCars: world.traffic.cars,
-    cops: world.police.cops,
+    cops: world.wanted.cops,
+    roadblocks: world.rush.roadblocks,
+    rushActive: world.rush.active,
+    rushRemaining: world.rush.remaining,
+    rushNextIn: rushSecondsUntilNext(world.rush),
+    time: world.time,
   };
 }
 
-// What the E key would do right now, for the prompt line under the HUD.
-export function interactPrompt(world) {
+// Apa yang akan dilakukan tombol E sekarang, untuk baris prompt di HUD.
+export function stealPrompt(world) {
   const player = world.player;
   if (player.dead || player.busted) return '';
   if (player.car) return 'E — Keluar dari mobil';
-  const car = nearestStealableCar(world, 3.6);
+  const car = nearestStealable(world, 3.6);
   if (car) return car.driver === null ? 'E — Curi mobil' : 'E — Bajak mobil ini';
-  const debtor = world.peds.find((p) => p.role === 'debtor' && !p.collected && Math.hypot(p.pos.x - player.pos.x, p.pos.z - player.pos.z) < 3.2);
+  const debtor = world.crowd.find(
+    (p) => p.role === 'debtor' && !p.collected && Math.hypot(p.pos.x - player.pos.x, p.pos.z - player.pos.z) < 3.2,
+  );
   if (debtor) return 'E — Tagih utang';
   return '';
 }
 
 export { STEP };
+export { beginStoryAt };

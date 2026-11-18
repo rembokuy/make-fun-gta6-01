@@ -1,9 +1,10 @@
-// All sound is synthesised with WebAudio — no audio files, no licences.
-// A lazy AudioContext starts on the first user gesture; a tiny step
-// sequencer plays a sunny bass-and-hats groove, and one-shot helpers make
-// the gunshot, punch, siren, horn, pickup chime and mission sting.
+// Semua suara disintesis dengan WebAudio — tanpa file audio, tanpa lisensi.
+// AudioContext malas dimulai pada gestur pertama pengguna; sequencer langkah
+// kecil memainkan groove bass-dan-hat yang cerah, dan helper one-shot
+// membuat tembakan, pukulan, sirene, klakson, bunyi pickup, sting misi,
+// dan klakson Rush Hour.
 
-export function createAudio() {
+export function createSynthAudio() {
   let ctx = null;
   let master = null;
   let musicTimer = null;
@@ -73,37 +74,30 @@ export function createAudio() {
     src.start(t);
   }
 
-  // A 16-step loop at 112 BPM: root-note bass on the beat, hats off-beat,
-  // a little lead sparkle every bar. Sunny, cheap, original.
-  const BASS = [55, 0, 55, 0, 65.4, 0, 55, 0, 49, 0, 49, 0, 58.3, 0, 73.4, 0];
-  const LEAD = [220, 0, 0, 261.6, 0, 0, 329.6, 0, 0, 0, 293.7, 0, 0, 392, 0, 0];
-
   function startMusic() {
     if (!ensure() || musicTimer) return;
-    const stepDur = 60 / 112 / 4;
+    // Groove cerah: bass di A minor pentatonik + hat tiap langkah.
+    const bassNotes = [110, 0, 130.81, 0, 98, 0, 146.83, 0, 110, 0, 130.81, 164.81, 98, 0, 123.47, 0];
     musicTimer = window.setInterval(() => {
-      if (muted || !ctx) return;
-      const bass = BASS[step % 16];
-      if (bass) blip(bass, stepDur * 1.8, 'triangle', 0.16);
-      if (step % 2 === 1) noiseHit(0.03, 0.05, 8000);
-      const lead = LEAD[step % 16];
-      if (lead) blip(lead, stepDur * 1.4, 'sine', 0.05);
-      step += 1;
-    }, stepDur * 1000);
+      if (muted) {
+        step = (step + 1) % 16;
+        return;
+      }
+      const note = bassNotes[step % 16];
+      if (note) blip(note, 0.22, 'triangle', 0.16);
+      if (step % 2 === 0) noiseHit(0.03, 0.05, 8000);
+      step = (step + 1) % 16;
+    }, 170);
   }
 
   function startEngine() {
     if (!ensure() || engineOsc) return;
     engineOsc = ctx.createOscillator();
     engineOsc.type = 'sawtooth';
-    engineOsc.frequency.value = 55;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 420;
+    engineOsc.frequency.value = 50;
     engineGain = ctx.createGain();
     engineGain.gain.value = 0;
-    engineOsc.connect(filter);
-    filter.connect(engineGain);
+    engineOsc.connect(engineGain);
     engineGain.connect(master);
     engineOsc.start();
   }
@@ -156,6 +150,10 @@ export function createAudio() {
     horn() {
       blip(370, 0.35, 'square', 0.12);
       blip(466, 0.35, 'square', 0.1);
+    },
+    rushHorn() {
+      // Klakson tiga nada saat Rush Hour dimulai.
+      [370, 466, 622].forEach((f, i) => window.setTimeout(() => blip(f, 0.3, 'square', 0.14), i * 130));
     },
     pickup() {
       blip(880, 0.12, 'sine', 0.18);

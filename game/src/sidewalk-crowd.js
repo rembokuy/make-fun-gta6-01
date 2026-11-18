@@ -1,10 +1,11 @@
-// Pedestrians: simple box-built people who stroll the sidewalks, wait at
-// corners, and scatter when a car or a punch comes too close. A few of
-// them are mission debtors or rival crew — the missions module marks them.
+// Kerumunan: orang-orang kotak yang berjalan di trotoar, menunggu di
+// sudut, dan berhamburan saat mobil atau pukulan mendekat. Sebagian dari
+// mereka adalah debitur misi atau preman rival — modul misi yang menandai
+// mereka. Semua belokan memakai RNG ber-seed supaya adegan bisa diulang.
 
 import * as THREE from 'three';
-import { CITY, PED_COUNT } from './config.js';
-import { collideBuildings } from './city.js';
+import { PED_COUNT, ROAD_LINES } from './game-config.js';
+import { pushOutOfBuildings } from './coastal-city.js';
 
 const SHIRTS = [0xe8a87c, 0x7fb5a3, 0xd96c5f, 0x9bb8d3, 0xf7c948, 0x8a5fb0, 0xf5f0e6];
 const SKINS = [0xf2c9a0, 0xc98a5e, 0x8a5a3a, 0xf7d7b5];
@@ -25,7 +26,10 @@ export function makePedMesh(rng) {
   head.position.y = 1.56;
   head.castShadow = true;
   group.add(head);
-  const hair = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.14, 0.36), new THREE.MeshLambertMaterial({ color: rng.pick([0x1c2733, 0x5a4632, 0x8a6b4a]) }));
+  const hair = new THREE.Mesh(
+    new THREE.BoxGeometry(0.38, 0.14, 0.36),
+    new THREE.MeshLambertMaterial({ color: rng.pick([0x1c2733, 0x5a4632, 0x8a6b4a]) }),
+  );
   hair.position.y = 1.78;
   group.add(hair);
   const armL = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.55, 0.13), shirt);
@@ -39,18 +43,18 @@ export function makePedMesh(rng) {
   return group;
 }
 
-function sidewalkPoint(rng) {
-  const line = rng.pick([-150, -75, 0, 75, 150]);
+function sidewalkSpot(rng) {
+  const line = rng.pick(ROAD_LINES);
   const along = rng.range(-170, 170);
   const side = rng.next() < 0.5 ? -8.6 : 8.6;
   if (rng.next() < 0.5) return { x: along, z: line + side };
   return { x: line + side, z: along };
 }
 
-export function createPedestrians(scene, rng) {
+export function buildCrowd(scene, rng) {
   const peds = [];
   for (let i = 0; i < PED_COUNT; i++) {
-    const spot = sidewalkPoint(rng);
+    const spot = sidewalkSpot(rng);
     const mesh = makePedMesh(rng);
     scene.add(mesh);
     peds.push({
@@ -59,16 +63,30 @@ export function createPedestrians(scene, rng) {
       heading: rng.range(0, Math.PI * 2),
       speed: rng.range(1.1, 1.9),
       walkPhase: rng.range(0, Math.PI * 2),
-      state: 'walk', // walk | flee | down | debtor | guard
+      state: 'walk', // walk | flee | down
       timer: rng.range(0, 6),
       health: 100,
-      role: null,
+      role: null, // null | 'debtor' | 'guard'
+      collected: false,
+      guarded: false,
+      attackTimer: 0,
     });
   }
   return peds;
 }
 
-export function updatePedestrians(peds, dt, colliders, threats) {
+// Pindahkan satu pejalan kaki ke titik tertentu (dipakai staging
+// screenshot supaya frame selalu ramai, dan misi 2 untuk debitur).
+export function placePed(ped, x, z, heading = 0, state = 'walk') {
+  ped.pos.x = x;
+  ped.pos.z = z;
+  ped.heading = heading;
+  ped.state = state;
+  ped.mesh.position.set(x, 0, z);
+  ped.mesh.rotation.set(0, heading, 0);
+}
+
+export function stepCrowd(peds, dt, colliders, threats, rng) {
   for (const ped of peds) {
     if (ped.state === 'down') {
       ped.mesh.rotation.x = Math.max(-Math.PI / 2, ped.mesh.rotation.x - dt * 3);
@@ -77,14 +95,14 @@ export function updatePedestrians(peds, dt, colliders, threats) {
     ped.mesh.rotation.x = 0;
     let speed = ped.speed;
     if (ped.role === 'debtor' && !ped.collected) {
-      // Debtors wait at their spot until Rae collects them.
+      // Debitur menunggu di tempatnya sampai Rae menagih mereka.
       speed = 0;
     } else if (ped.state === 'flee') {
       speed = 4.2;
       ped.timer -= dt;
       if (ped.timer <= 0) ped.state = 'walk';
     } else {
-      // Flee from the nearest threat (a fast car or a recent punch).
+      // Lari dari ancaman terdekat (mobil kencang atau pukulan barusan).
       for (const t of threats) {
         const dx = ped.pos.x - t.x;
         const dz = ped.pos.z - t.z;
@@ -98,16 +116,16 @@ export function updatePedestrians(peds, dt, colliders, threats) {
       }
       ped.timer -= dt;
       if (ped.timer <= 0) {
-        ped.timer = rngPickTurn();
-        ped.heading += (Math.random() - 0.5) * 1.6;
+        ped.timer = rng.range(3, 8);
+        ped.heading += (rng.next() - 0.5) * 1.6;
       }
     }
-    // Guards are steered by combat.js (they walk up to Rae and punch);
-    // the crowd system only syncs their mesh, never moves them.
+    // Preman digerakkan combat.js (mendekati Rae dan memukul); sistem
+    // kerumunan hanya menyinkronkan mesh mereka, tidak menggerakkan.
     if (ped.role !== 'guard') {
       ped.pos.x += Math.sin(ped.heading) * speed * dt;
       ped.pos.z += Math.cos(ped.heading) * speed * dt;
-      collideBuildings(colliders, ped.pos, 0.5);
+      pushOutOfBuildings(colliders, ped.pos, 0.5);
       ped.pos.x = Math.max(-192, Math.min(192, ped.pos.x));
       ped.pos.z = Math.max(-192, Math.min(192, ped.pos.z));
     }
@@ -118,13 +136,6 @@ export function updatePedestrians(peds, dt, colliders, threats) {
     ped.mesh.position.set(ped.pos.x, 0, ped.pos.z);
     ped.mesh.rotation.y = ped.heading;
   }
-}
-
-let turnSeed = 4;
-function rngPickTurn() {
-  // Small deterministic-ish turn timer; gameplay only, not the shot scenes.
-  turnSeed = (turnSeed * 16807) % 2147483647;
-  return 3 + (turnSeed % 5000) / 1000;
 }
 
 export function pedDistance(a, b) {

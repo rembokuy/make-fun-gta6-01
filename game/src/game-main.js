@@ -1,18 +1,19 @@
-// SOLMARINA — boot and the one loop. The game moves between five screens:
-// title, play, paused, busted / wasted, and story done. The world advances
-// in fixed 1/60 s steps; the renderer follows the player and the HUD paints
-// the state every frame.
+// SOLMARINA v2 — boot dan satu-satunya loop. Permainan berpindah di antara
+// lima layar: judul, bermain, jeda, tertangkap / tumbang, dan cerita selesai.
+// Dunia maju dalam langkah tetap 1/60 dtk; renderer membuntuti pemain dan
+// HUD melukis state setiap frame.
 //
-// ?seed=N fixes the city. ?shot=chase|walk|drive|mission (with &seed=N)
-// stages that scene instead of running the loop, paints it twice and sets
-// window.__shotReady for a screenshot.
+// ?seed=N menetapkan kota. ?shot=chase|walk|drive|mission (dengan &seed=N)
+// men-stage adegan itu, bukan menjalankan loop — melukisnya dua kali lalu
+// menyetel window.__shotReady untuk screenshot.
 
-import { STEP, PLAYER } from './config.js';
-import { createWorld, updateWorld, getHudState, interactPrompt, loadSave, applySave } from './world.js';
-import { createRenderer } from './render.js';
-import { createInput, ACTION_CONFIRM, ACTION_PAUSE } from './input.js';
-import { createHud, showOverlay } from './hud.js';
-import { stageShot } from './shots.js';
+import { STEP, PLAYER } from './game-config.js';
+import { createSolmarina, stepSolmarina, hudSnapshot, stealPrompt } from './solmarina-world.js';
+import { applyProgress, loadProgress } from './save-game.js';
+import { createSceneRenderer } from './scene-renderer.js';
+import { createKeyboardInput, ACTION_CONFIRM, ACTION_PAUSE } from './keyboard-input.js';
+import { createGameHud, showOverlay } from './game-hud.js';
+import { stageShot } from './screenshot-staging.js';
 
 const MAX_FRAME = 0.25;
 
@@ -25,7 +26,7 @@ const canvas = document.getElementById('game');
 const hudEl = document.getElementById('hud');
 const errEl = document.getElementById('err');
 
-// In headless runs the console is invisible: surface errors in the DOM.
+// Saat headless, console tidak terlihat: tampilkan error di DOM.
 window.addEventListener('error', (event) => {
   errEl.textContent += `ERROR: ${event.message}\n`;
 });
@@ -33,27 +34,13 @@ window.addEventListener('unhandledrejection', (event) => {
   errEl.textContent += `REJECTION: ${event.reason}\n`;
 });
 
-const renderer = createRenderer(canvas);
-const world = createWorld(renderer.scene, seed);
-const hud = createHud();
-const input = createInput(canvas);
+const renderer = createSceneRenderer(canvas);
+const world = createSolmarina(renderer.scene, seed);
+const hud = createGameHud();
+const input = createKeyboardInput(canvas);
 
-// Exposed for debugging and automated play-tests (read-only state view).
+// Diekspos untuk debugging dan play-test otomatis (tampilan state read-only).
 window.__solmarina = world;
-
-world.onEvent = (type) => {
-  if (type === 'toast') return; // toasts are shown below, from the queue
-  if (type === 'wasted') showOverlay('overlay-wasted');
-  else if (type === 'busted') showOverlay('overlay-busted');
-  else if (type === 'story') showOverlay('overlay-story');
-};
-
-// Toasts arrive through world events; keep the last one on screen.
-const origEmit = world.onEvent;
-world.onEvent = (type, payload) => {
-  if (type === 'toast') hud.showToast(payload);
-  origEmit(type, payload);
-};
 
 function unlockAudio() {
   world.audio.unlock();
@@ -64,17 +51,27 @@ function unlockAudio() {
 window.addEventListener('pointerdown', unlockAudio, { once: true });
 window.addEventListener('keydown', unlockAudio, { once: true });
 
+// Toast dari dunia: di mode shot, toast bertahan 60 detik supaya tidak
+// sempat hilang sebelum screenshot diambil.
+world.onEvent = (type, payload) => {
+  if (type === 'toast') hud.showToast(payload, shot ? 60000 : 3200);
+  else if (type === 'wasted') showOverlay('overlay-wasted');
+  else if (type === 'busted') showOverlay('overlay-busted');
+  else if (type === 'story') showOverlay('overlay-story');
+};
+
 function runShot(name) {
   hudEl.classList.add('on');
-  showOverlay(null); // the title menu must not cover the staged scene
+  showOverlay(null); // menu judul tidak boleh menutupi adegan
   stageShot(name, world);
-  // Settle the camera, then paint twice so shadows and the HUD are final.
-  for (let i = 0; i < 30; i++) renderer.follow(world, 1 / 60);
+  // Jepret kamera ke posisi akhir, lalu lukis dua kali supaya bayangan
+  // dan HUD sudah final.
+  renderer.snap(world);
   let painted = 0;
   function paint() {
     renderer.follow(world, 1 / 60);
     renderer.draw();
-    hud.update(getHudState(world));
+    hud.update(hudSnapshot(world));
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
@@ -86,22 +83,24 @@ function runGame() {
   let screen = 'title';
   let accumulator = 0;
   let last = performance.now();
-  const save = loadSave();
+  const save = loadProgress();
   const btnContinue = document.getElementById('btn-continue');
   if (save && (save.money > 0 || save.mission > 0)) btnContinue.style.display = '';
 
   function startGame(fresh) {
     if (fresh) {
       try {
+        window.localStorage.removeItem('solmarina.save.v2');
         window.localStorage.removeItem('solmarina.save.v1');
       } catch {
-        // Storage off: nothing to clear.
+        // Storage mati: tidak ada yang dibersihkan.
       }
       world.player.money = 0;
+      world.player.totalEarned = 0;
       world.player.health = PLAYER.health;
       world.player.pos = { x: 12, z: 12 };
     } else if (save) {
-      applySave(world, save);
+      applyProgress(world, save);
     }
     hudEl.classList.add('on');
     showOverlay(null);
@@ -130,26 +129,38 @@ function runGame() {
     world.player.money = Math.max(0, world.player.money - 200);
     world.player.pos = { x: 12, z: 12 };
     world.player.health = Math.max(50, world.player.health);
-    world.police.wanted = 0;
-    world.police.cops.length = 0;
+    world.wanted.wanted = 0;
+    world.wanted.cops.length = 0;
     resumeGame();
   });
   document.getElementById('btn-wasted').addEventListener('click', () => {
     world.player.dead = false;
     world.player.health = PLAYER.health;
     world.player.pos = { x: 12, z: 12 };
-    world.police.wanted = 0;
+    world.wanted.wanted = 0;
     resumeGame();
   });
   document.getElementById('btn-story').addEventListener('click', resumeGame);
 
   function handleActions() {
-    // Take only the menu's own bits; the world takes E / F / click itself.
+    // Ambil hanya bit milik menu; dunia mengambil E / F / klik sendiri.
     const actions = input.takeActions(ACTION_PAUSE | ACTION_CONFIRM);
     if (screen === 'title' && (actions & ACTION_CONFIRM)) startGame(true);
     else if (screen === 'play' && (actions & ACTION_PAUSE)) pauseGame();
     else if (screen === 'pause' && (actions & (ACTION_PAUSE | ACTION_CONFIRM))) resumeGame();
   }
+
+  // Input kosong untuk dunia saat layar judul: kota tetap hidup di
+  // belakang menu, tapi pemain tidak bergerak.
+  const idleInput = {
+    takeActions: () => 0,
+    takeMouseDelta: () => ({ dx: 0, dy: 0 }),
+    throttle: () => 0,
+    steer: () => 0,
+    sprint: () => false,
+    mouseDown: () => false,
+    wheelDelta: () => 0,
+  };
 
   function frame(now) {
     requestAnimationFrame(frame);
@@ -159,7 +170,7 @@ function runGame() {
     if (screen === 'play') {
       let guard = 0;
       while (accumulator >= STEP && guard < 8) {
-        updateWorld(world, STEP, input);
+        stepSolmarina(world, STEP, input);
         accumulator -= STEP;
         guard += 1;
       }
@@ -167,23 +178,13 @@ function runGame() {
       if (world.player.dead || world.player.busted) screen = 'over';
     } else {
       accumulator = 0;
-      // The title screen still shows the living city behind the menu.
-      if (screen === 'title') {
-        updateWorld(world, STEP, {
-          takeActions: () => 0,
-          takeMouseDelta: () => ({ dx: 0, dy: 0 }),
-          throttle: () => 0,
-          steer: () => 0,
-          sprint: () => false,
-          mouseDown: () => false,
-        });
-      }
+      if (screen === 'title') stepSolmarina(world, STEP, idleInput);
     }
     renderer.follow(world, Math.min((now - last) / 1000 || 0.016, 0.05));
     renderer.draw();
     if (screen === 'play' || screen === 'over') {
-      hud.update(getHudState(world));
-      hud.setPrompt(screen === 'play' ? interactPrompt(world) : '');
+      hud.update(hudSnapshot(world));
+      hud.setPrompt(screen === 'play' ? stealPrompt(world) : '');
     }
   }
 

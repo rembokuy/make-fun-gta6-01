@@ -1,12 +1,13 @@
-// Cheap particles: one THREE.Points cloud, recycled. Sparks for hits,
-// grey smoke for crashes, gold puffs for pickups, red muzzle flash.
-// Nothing is allocated per frame.
+// Partikel murah: satu awan THREE.Points yang didaur ulang. Percikan
+// untuk pukulan, asap abu-abu untuk tabrakan, kilau emas untuk pickup,
+// dan confetti warna-warni saat misi selesai. Tidak ada alokasi per frame.
+// Semua keacakan memakai RNG ber-seed supaya screenshot bisa diulang.
 
 import * as THREE from 'three';
 
 const MAX = 400;
 
-export function createEffects(scene) {
+export function createParticleField(scene, rng) {
   const geo = new THREE.BufferGeometry();
   const positions = new Float32Array(MAX * 3);
   const colors = new Float32Array(MAX * 3);
@@ -21,7 +22,7 @@ export function createEffects(scene) {
     parts.push({ alive: false, x: 0, y: -100, z: 0, vx: 0, vy: 0, vz: 0, life: 0, max: 1 });
     positions[i * 3 + 1] = -100;
   }
-  return { points, positions, colors, parts, cursor: 0 };
+  return { points, positions, colors, parts, cursor: 0, rng };
 }
 
 function spawn(fx, x, y, z, vx, vy, vz, life, r, g, b) {
@@ -44,27 +45,48 @@ function spawn(fx, x, y, z, vx, vy, vz, life, r, g, b) {
 
 export function burstSparks(fx, pos) {
   for (let i = 0; i < 14; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const s = 3 + Math.random() * 5;
-    spawn(fx, pos.x, 1.2, pos.z, Math.sin(a) * s, 2 + Math.random() * 4, Math.cos(a) * s, 0.5, 1, 0.8, 0.2);
+    const a = fx.rng.angle();
+    const s = 3 + fx.rng.next() * 5;
+    spawn(fx, pos.x, 1.2, pos.z, Math.sin(a) * s, 2 + fx.rng.next() * 4, Math.cos(a) * s, 0.5, 1, 0.8, 0.2);
   }
 }
 
 export function burstSmoke(fx, pos) {
   for (let i = 0; i < 10; i++) {
-    spawn(fx, pos.x + (Math.random() - 0.5) * 2, 0.8, pos.z + (Math.random() - 0.5) * 2,
-      (Math.random() - 0.5) * 2, 1.5 + Math.random() * 2, (Math.random() - 0.5) * 2, 0.9, 0.55, 0.55, 0.55);
+    spawn(
+      fx,
+      pos.x + (fx.rng.next() - 0.5) * 2,
+      0.8,
+      pos.z + (fx.rng.next() - 0.5) * 2,
+      (fx.rng.next() - 0.5) * 2,
+      1.5 + fx.rng.next() * 2,
+      (fx.rng.next() - 0.5) * 2,
+      0.9,
+      0.55,
+      0.55,
+      0.55,
+    );
   }
 }
 
 export function burstGold(fx, pos) {
   for (let i = 0; i < 16; i++) {
-    const a = Math.random() * Math.PI * 2;
-    spawn(fx, pos.x, 1, pos.z, Math.sin(a) * 2, 3 + Math.random() * 3, Math.cos(a) * 2, 0.7, 1, 0.85, 0.3);
+    const a = fx.rng.angle();
+    spawn(fx, pos.x, 1, pos.z, Math.sin(a) * 2, 3 + fx.rng.next() * 3, Math.cos(a) * 2, 0.7, 1, 0.85, 0.3);
   }
 }
 
-export function updateEffects(fx, dt) {
+export function burstConfetti(fx, pos) {
+  const palette = [[1, 0.4, 0.3], [1, 0.85, 0.3], [0.4, 0.8, 1], [0.5, 0.9, 0.5], [0.9, 0.5, 1]];
+  for (let i = 0; i < 30; i++) {
+    const a = fx.rng.angle();
+    const s = 2 + fx.rng.next() * 4;
+    const c = palette[i % palette.length];
+    spawn(fx, pos.x, 1.5, pos.z, Math.sin(a) * s, 4 + fx.rng.next() * 4, Math.cos(a) * s, 1.1, c[0], c[1], c[2]);
+  }
+}
+
+export function stepParticles(fx, dt) {
   for (let i = 0; i < MAX; i++) {
     const p = fx.parts[i];
     if (!p.alive) continue;

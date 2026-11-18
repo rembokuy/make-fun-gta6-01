@@ -13,13 +13,17 @@
   #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; color: #fff; display: none; }
   #hud.on { display: block; }
   .panel { background: rgba(10, 16, 24, 0.62); border: 1px solid rgba(255,255,255,0.18); border-radius: 10px; backdrop-filter: blur(2px); }
-  #hud-topleft { position: absolute; top: 14px; left: 14px; padding: 10px 14px; min-width: 220px; }
+  #hud-topleft { position: absolute; top: 14px; left: 14px; padding: 10px 14px; min-width: 240px; }
   #hud-mission { font-size: 13px; font-weight: 700; letter-spacing: 0.4px; color: #ffd34d; }
   #hud-objective { font-size: 13px; margin-top: 4px; line-height: 1.35; }
   #hud-money { font-size: 22px; font-weight: 800; margin-top: 6px; color: #7dff9a; }
+  #hud-earned { font-size: 11px; font-weight: 700; letter-spacing: 1px; margin-top: 2px; color: #ffd34d; }
+  #hud-bonus { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; margin-top: 4px; color: #ff9d5c; }
   #hud-topright { position: absolute; top: 14px; right: 14px; padding: 8px 14px; text-align: right; }
   #hud-stars { font-size: 22px; letter-spacing: 3px; }
   #hud-wanted-label { font-size: 11px; letter-spacing: 2px; opacity: 0.8; }
+  #hud-rush { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); padding: 8px 18px; background: rgba(255, 122, 26, 0.88); border: 1px solid #ffd34d; border-radius: 10px; font-size: 14px; font-weight: 800; letter-spacing: 1px; color: #fff; opacity: 0; transition: opacity 0.25s; white-space: nowrap; }
+  #hud-rush.show { opacity: 1; }
   #hud-bottomleft { position: absolute; left: 14px; bottom: 14px; padding: 10px 14px; width: 220px; }
   #hud-health-label { font-size: 11px; letter-spacing: 2px; opacity: 0.85; }
   #hud-health-bar { height: 10px; background: rgba(255,255,255,0.18); border-radius: 6px; margin-top: 5px; overflow: hidden; }
@@ -44,6 +48,7 @@
   .card p { font-size: 15px; line-height: 1.55; opacity: 0.92; }
   .card .controls { font-size: 13px; line-height: 1.9; text-align: left; display: inline-block; background: rgba(255,255,255,0.06); border-radius: 10px; padding: 12px 18px; margin: 10px 0 4px; }
   .card .controls b { color: #ffd34d; }
+  .card .rush-note { font-size: 13px; line-height: 1.5; color: #ff9d5c; font-weight: 600; }
   button { pointer-events: auto; cursor: pointer; font: inherit; font-weight: 700; font-size: 16px; color: #14181d; background: #ffd34d; border: none; border-radius: 10px; padding: 12px 26px; margin: 8px 6px 0; }
   button:hover { background: #ffe08a; }
   button.secondary { background: rgba(255,255,255,0.16); color: #fff; }
@@ -62,11 +67,14 @@
     <div id="hud-mission">Misi 1 — Kurir Pagi</div>
     <div id="hud-objective">Ambil paket di Pasar Ikan.</div>
     <div id="hud-money">$0</div>
+    <div id="hud-earned">TOTAL DIDAPAT $0 / $1.250</div>
+    <div id="hud-bonus"></div>
   </div>
   <div id="hud-topright" class="panel">
     <div id="hud-wanted-label">WANTED</div>
     <div id="hud-stars">☆☆☆☆☆</div>
   </div>
+  <div id="hud-rush"><span id="hud-rush-text">RUSH HOUR</span></div>
   <div id="hud-bottomleft" class="panel">
     <div id="hud-health-label">RAE MARLOWE — KESEHATAN</div>
     <div id="hud-health-bar"><div id="hud-health-fill"></div></div>
@@ -84,7 +92,8 @@
     <h1>SOLMARINA</h1>
     <div class="sub">SUN COAST GETAWAY</div>
     <p>Kota pantai yang terik, mobil untuk dicuri, polisi yang tak kenal ampun — dan Rae Marlowe,
-    kurir yang berutang pada kru marina. Kerjakan tiga misi, kumpulkan uang, dan jangan sampai tertangkap.</p>
+    kurir yang berutang pada kru marina. Kerjakan tiga misi, kumpulkan $1.250, dan jangan sampai tertangkap.</p>
+    <p class="rush-note">⚠ RUSH HOUR datang tiap ~90 detik: traffic ×3, roadblock polisi di persimpangan, payout misi +50%.</p>
     <div class="controls">
       <b>W A S D</b> — jalan kaki / mengemudi &nbsp;·&nbsp; <b>Shift</b> — lari<br>
       <b>E</b> — masuk, curi &amp; bajak mobil / tagih utang<br>
@@ -134,6 +143,6 @@
   </div>
 </div>
 
-<script type="module" src="./src/main.js"></script>
+<script type="module" src="./src/game-main.js"></script>
 </body>
 </html>

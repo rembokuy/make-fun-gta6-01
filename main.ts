@@ -1,14 +1,14 @@
-// SOLMARINA — the make.fun entrypoint (Node 22, standard library only).
-// The game is plain static files in game/ (three.js vendored under
-// game/vendor/, no network request at play time). This program hands it
-// in: it copies game/ and screenshots/ from beside this file to /output
-// and writes /output/dossier.json with the vendored make.fun library.
-// It writes exactly the same bytes on every run: the copy is a plain
-// file copy and buildDossier is deterministic, so the grader's two runs
-// always agree.
+// SOLMARINA — titik masuk make.fun (Node 22, pustaka standar saja).
+// Game-nya berupa file statis polos di game/ (three.js di-vendor di bawah
+// game/vendor/, tanpa request jaringan saat bermain). Program ini
+// mengantarkannya: menyalin game/ dan screenshots/ dari samping file ini
+// ke /output lalu menulis /output/dossier.json dengan pustaka make.fun
+// yang di-vendor. Program ini menulis byte yang persis sama di setiap
+// run: salinannya salinan file polos dan buildDossier deterministik,
+// jadi dua run grader selalu sepakat.
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
+// Jalankan lokal dengan `node serve.ts`, lalu buka http://localhost:8080.
+// Di luar grader, MAKEFUN_OUTPUT_DIR menggantikan /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -24,10 +24,11 @@ cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
 if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes
-// the bytes; the others refuse an entry the scorer would refuse (more than
-// 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB
-// of game files, in all, or a path under game/ over 1000 bytes).
+// Batas milik scorer sendiri (reference/gate.json): hanya text_max_bytes
+// yang membentuk byte; sisanya menolak entri yang akan ditolak scorer
+// (lebih dari 4 screenshot atau satu di atas 256 KiB; lebih dari 993 file
+// di game/ atau 48 MiB file game secara keseluruhan, atau path di bawah
+// game/ yang lebih dari 1000 byte).
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, {

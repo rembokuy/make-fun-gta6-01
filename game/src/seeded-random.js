@@ -1,9 +1,9 @@
-// A tiny seeded RNG (mulberry32) so the city, traffic and every screenshot
-// scene are reproducible from one seed: the same seed always builds the
-// same Solmarina.
+// RNG ber-seed (mulberry32) supaya kota, traffic, polisi, dan setiap
+// adegan screenshot bisa diulang dari satu seed: seed yang sama selalu
+// membangun Solmarina yang sama, piksel demi piksel.
 
 export function createRandom(seed) {
-  let a = seed >>> 0;
+  let a = (seed >>> 0) || 0x9e3779b9;
   return {
     next() {
       a |= 0;
@@ -20,6 +20,12 @@ export function createRandom(seed) {
     },
     pick(list) {
       return list[Math.floor(this.next() * list.length)];
+    },
+    chance(p) {
+      return this.next() < p;
+    },
+    angle() {
+      return this.next() * Math.PI * 2;
     },
   };
 }

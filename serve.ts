@@ -1,9 +1,10 @@
-// A tiny static server for game/ (Node 22, standard library only), so
-// SOLMARINA can be played locally without a build step:
+// Server statis mungil untuk game/ (Node 22, pustaka standar saja), supaya
+// SOLMARINA bisa dimainkan lokal tanpa langkah build:
 //   node serve.ts
-// serves game/ on http://localhost:8080. It sends the MIME types a browser
-// game needs, refuses any path outside game/, and otherwise does nothing
-// clever: this is a development convenience, not a web server.
+// melayani game/ di http://localhost:8080. Server ini mengirim tipe MIME
+// yang dibutuhkan game browser, menolak path apa pun di luar game/, dan
+// selain itu tidak melakukan hal pintar: ini kenyamanan pengembangan,
+// bukan server web.
 
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -40,6 +41,10 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+function contentType(pathname: string): string {
+  return MIME[extname(pathname).toLowerCase()] ?? 'application/octet-stream';
+}
+
 createServer((request, response) => {
   const url = new URL(request.url ?? '/', 'http://localhost');
   let pathname: string;
@@ -65,7 +70,7 @@ createServer((request, response) => {
     return;
   }
   response.writeHead(200, {
-    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'content-type': contentType(pathname),
     'content-length': size,
     'cache-control': 'no-store',
   });

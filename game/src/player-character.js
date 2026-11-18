@@ -1,11 +1,11 @@
-// Rae Marlowe on foot: a box-built figure in a red jacket, with a walk
-// cycle (swinging arms, bobbing torso) and a pistol that appears when
-// shooting. Movement is relative to the camera, so W always runs away
-// from the lens.
+// Rae Marlowe jalan kaki: figur kotak berjaket merah dan topi kuning,
+// dengan siklus jalan (ayunan lengan, badan naik-turun) dan pistol yang
+// muncul saat menembak. Gerakan relatif terhadap kamera, jadi W selalu
+// berlari menjauhi lensa.
 
 import * as THREE from 'three';
-import { PALETTE, PLAYER } from './config.js';
-import { collideBuildings, clampToCity } from './city.js';
+import { PALETTE, PLAYER } from './game-config.js';
+import { pushOutOfBuildings, keepInsideCity } from './coastal-city.js';
 
 export function makePlayerMesh() {
   const group = new THREE.Group();
@@ -23,17 +23,29 @@ export function makePlayerMesh() {
   head.position.y = 1.62;
   head.castShadow = true;
   group.add(head);
-  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 0.4), new THREE.MeshLambertMaterial({ color: 0xffd34d }));
+  const cap = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.12, 0.4),
+    new THREE.MeshLambertMaterial({ color: 0xffd34d }),
+  );
   cap.position.y = 1.84;
   group.add(cap);
+  const brim = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.05, 0.22),
+    new THREE.MeshLambertMaterial({ color: 0xffd34d }),
+  );
+  brim.position.set(0, 1.8, 0.28);
+  group.add(brim);
   const armL = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.58, 0.14), shirt);
   armL.position.set(-0.38, 1.08, 0);
   group.add(armL);
   const armR = armL.clone();
   armR.position.x = 0.38;
   group.add(armR);
-  // The pistol, hidden until Rae shoots.
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.42), new THREE.MeshLambertMaterial({ color: 0x14181d }));
+  // Pistol, tersembunyi sampai Rae menembak.
+  const gun = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 0.12, 0.42),
+    new THREE.MeshLambertMaterial({ color: 0x14181d }),
+  );
   gun.position.set(0.38, 1.0, 0.3);
   gun.visible = false;
   group.add(gun);
@@ -44,9 +56,9 @@ export function makePlayerMesh() {
   return group;
 }
 
-// Move on foot. `move` is {x, z} in world space (already camera-relative),
-// `sprint` doubles the pace. Returns the distance moved.
-export function updatePlayerOnFoot(player, move, sprint, dt, colliders) {
+// Jalan kaki. `move` adalah {x, z} di ruang dunia (sudah relatif kamera),
+// `sprint` menggandakan kecepatan. Mengembalikan jarak yang ditempuh.
+export function stepPlayerOnFoot(player, move, sprint, dt, colliders) {
   const speed = sprint ? PLAYER.runSpeed : PLAYER.walkSpeed;
   const len = Math.hypot(move.x, move.z);
   if (len > 0.01) {
@@ -57,8 +69,8 @@ export function updatePlayerOnFoot(player, move, sprint, dt, colliders) {
     player.heading = Math.atan2(nx, nz);
     player.walkPhase += dt * speed * 1.6;
   }
-  collideBuildings(colliders, player.pos, PLAYER.radius);
-  clampToCity(player.pos, 2);
+  pushOutOfBuildings(colliders, player.pos, PLAYER.radius);
+  keepInsideCity(player.pos, 2);
   const mesh = player.mesh;
   mesh.position.set(player.pos.x, Math.abs(Math.sin(player.walkPhase)) * 0.05, player.pos.z);
   mesh.rotation.y = player.heading;
@@ -70,4 +82,17 @@ export function updatePlayerOnFoot(player, move, sprint, dt, colliders) {
 
 export function setPlayerGunVisible(player, visible) {
   player.mesh.userData.gun.visible = visible;
+}
+
+// Pose kemenangan singkat: Rae mengangkat kedua lengan saat misi selesai.
+export function playCelebratePose(player, seconds) {
+  player.celebrateTimer = seconds;
+}
+
+export function applyCelebratePose(player, dt) {
+  if (!player.celebrateTimer || player.celebrateTimer <= 0) return;
+  player.celebrateTimer -= dt;
+  const up = player.celebrateTimer > 0;
+  player.mesh.userData.armL.rotation.x = up ? -2.4 : 0;
+  player.mesh.userData.armR.rotation.x = up ? -2.4 : 0;
 }

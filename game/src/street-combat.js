@@ -1,16 +1,17 @@
-// Combat: fists (F) and a pistol (mouse click). Punches hit the nearest
-// person in front of Rae; shots hit the nearest person roughly in the
-// camera's aim line. Guards fight back with slow, telegraphed punches.
-// Hitting a bystander is a crime — the wanted level notices.
+// Combat: tinju (F) dan pistol (klik mouse). Pukulan mengenai orang
+// terdekat di depan Rae; tembakan mengenai orang terdekat kira-kira di
+// garis bidik kamera. Preman membalas dengan pukulan yang lambat dan
+// mudah ditebak. Memukul orang biasa adalah kejahatan — wanted naik.
 
-import { PLAYER } from './config.js';
+import { PLAYER } from './game-config.js';
 
-export function createCombat() {
+export function createCombatState() {
   return {
     punchTimer: 0,
     shootTimer: 0,
     muzzleFlash: 0,
-    lastTarget: null,
+    shotsFired: 0,
+    punchesLanded: 0,
   };
 }
 
@@ -24,15 +25,15 @@ function angleTo(from, heading, to) {
   return { dist: Math.hypot(dx, dz), diff };
 }
 
-// The nearest living ped inside `range` and `arc` radians of `heading`.
+// Orang hidup terdekat di dalam `range` dan `arc` radian dari `heading`.
 export function nearestInArc(peds, from, heading, range, arc) {
   let best = null;
   let bestD = Infinity;
   for (const ped of peds) {
     if (ped.state === 'down') continue;
     const { dist, diff } = angleTo(from, heading, ped.pos);
-    // Point-blank (on top of the player) counts as straight ahead: the
-    // angle to a target at distance zero is meaningless.
+    // Jarak nol (tepat di atas pemain) dihitung lurus ke depan: sudut ke
+    // target berjarak nol tidak ada artinya.
     if (dist < range && (dist < 0.35 || Math.abs(diff) < arc) && dist < bestD) {
       best = ped;
       bestD = dist;
@@ -41,7 +42,12 @@ export function nearestInArc(peds, from, heading, range, arc) {
   return best;
 }
 
-export function updateCombat(combat, dt, ctx) {
+function knockDown(ped) {
+  ped.state = 'down';
+  ped.health = 0;
+}
+
+export function stepCombat(combat, dt, ctx) {
   combat.punchTimer = Math.max(0, combat.punchTimer - dt);
   combat.shootTimer = Math.max(0, combat.shootTimer - dt);
   combat.muzzleFlash = Math.max(0, combat.muzzleFlash - dt * 6);
@@ -56,42 +62,38 @@ export function updateCombat(combat, dt, ctx) {
       target.timer = 2;
       target.heading = Math.atan2(target.pos.x - ctx.pos.x, target.pos.z - ctx.pos.z);
       ctx.spark(target.pos);
-      if (target.health <= 0) {
-        target.state = 'down';
-        target.health = 0;
-      }
-      if (target.role === null) ctx.crime(1); // hitting a bystander
+      combat.punchesLanded += 1;
+      if (target.health <= 0) knockDown(target);
+      if (target.role === null) ctx.crime(1); // memukul orang biasa
     }
   }
 
   if (ctx.shoot && combat.shootTimer <= 0 && !ctx.inCar) {
     combat.shootTimer = 0.35;
     combat.muzzleFlash = 1;
+    combat.shotsFired += 1;
     ctx.gunSound();
     ctx.crime(2);
     const target = nearestInArc(ctx.peds, ctx.pos, ctx.heading, 40, 0.22);
     if (target) {
       target.health -= 60;
       ctx.spark(target.pos);
-      if (target.health <= 0) {
-        target.state = 'down';
-        target.health = 0;
-      } else {
+      if (target.health <= 0) knockDown(target);
+      else {
         target.state = 'flee';
         target.timer = 3;
         target.heading = Math.atan2(target.pos.x - ctx.pos.x, target.pos.z - ctx.pos.z);
       }
     }
-    // A shot can also scare a parked car's alarm: nothing breaks, it just pings.
   }
 
-  // Guards punch back when Rae is close.
+  // Preman membalas saat Rae dekat: mendekat, berhenti di jarak pukul,
+  // lalu memukul dengan jeda — tidak pernah berjalan menembus Rae.
   for (const ped of ctx.peds) {
     if (ped.role !== 'guard' || ped.state === 'down') continue;
-    ped.attackTimer = (ped.attackTimer ?? 0) - dt;
+    ped.attackTimer -= dt;
     const d = Math.hypot(ped.pos.x - ctx.pos.x, ped.pos.z - ctx.pos.z);
     if (d < 6 && !ctx.inCar) {
-      // Walk toward Rae, but stop at punching range — never walk through her.
       ped.heading = Math.atan2(ctx.pos.x - ped.pos.x, ctx.pos.z - ped.pos.z);
       if (d > 1.9) {
         ped.pos.x += Math.sin(ped.heading) * 2.6 * dt;

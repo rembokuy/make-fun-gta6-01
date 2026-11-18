@@ -1,15 +1,15 @@
-// Cars: a box-built body with cabin, wheels that spin and steer, and
-// arcade driving physics (accelerate, brake, reverse, drift-y steering).
-// The same builder makes the player's cars, traffic and police cars —
-// only the paint, the light bar and the plate differ.
+// Mobil: badan dari kotak dengan kabin, roda yang berputar dan berbelok,
+// dan fisika arcade (akselerasi, rem, mundur, setir yang terasa melayang).
+// Builder yang sama membuat mobil pemain, traffic, dan mobil polisi —
+// hanya cat, lampu, dan pelatnya yang berbeda.
 
 import * as THREE from 'three';
-import { CAR, PALETTE } from './config.js';
-import { collideBuildings } from './city.js';
+import { CAR, PALETTE } from './game-config.js';
+import { pushOutOfBuildings } from './coastal-city.js';
 
 const BODY_COLORS = [0xd94f3d, 0x3d7bd9, 0xf7c948, 0x7fb5a3, 0xe8e4da, 0x8a5fb0, 0x2f3540, 0xd96c5f];
 
-export function makeCarMesh(color, opts = {}) {
+export function buildCarMesh(color, opts = {}) {
   const group = new THREE.Group();
   const paint = new THREE.MeshLambertMaterial({ color });
   const dark = new THREE.MeshLambertMaterial({ color: 0x1c2733 });
@@ -52,15 +52,35 @@ export function makeCarMesh(color, opts = {}) {
     const bar = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.16, 0.4), dark);
     bar.position.set(0, 1.45, -0.25);
     group.add(bar);
-    const red = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.42), new THREE.MeshBasicMaterial({ color: 0xff2a2a }));
+    const red = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.18, 0.42),
+      new THREE.MeshBasicMaterial({ color: PALETTE.copLightRed }),
+    );
     red.position.set(-0.32, 1.46, -0.25);
     group.add(red);
-    const blue = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.42), new THREE.MeshBasicMaterial({ color: 0x2a6bff }));
+    const blue = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.18, 0.42),
+      new THREE.MeshBasicMaterial({ color: PALETTE.copLightBlue }),
+    );
     blue.position.set(0.32, 1.46, -0.25);
     group.add(blue);
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.02, 0.2, 4.42), new THREE.MeshBasicMaterial({ color: 0xf5f0e6 }));
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(2.02, 0.2, 4.42),
+      new THREE.MeshBasicMaterial({ color: 0xf5f0e6 }),
+    );
     stripe.position.y = 0.55;
     group.add(stripe);
+    group.userData.copRed = red;
+    group.userData.copBlue = blue;
+  }
+
+  if (opts.taxi) {
+    const sign = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7, 0.22, 0.4),
+      new THREE.MeshBasicMaterial({ color: 0xffe08a }),
+    );
+    sign.position.set(0, 1.48, -0.25);
+    group.add(sign);
   }
 
   const wheels = [];
@@ -80,13 +100,13 @@ export function makeCarMesh(color, opts = {}) {
   return group;
 }
 
-export function randomCarColor(rng) {
+export function randomPaint(rng) {
   return rng.pick(BODY_COLORS);
 }
 
-// One drivable car: position, heading, speed and its mesh. `driver` is
-// 'player' | 'traffic' | 'police' | null (parked, stealable).
-export function createCar(mesh, x, z, heading, driver) {
+// Satu mobil yang bisa dikendarai: posisi, arah, kecepatan, dan mesh-nya.
+// `driver` adalah 'player' | 'traffic' | 'police' | null (parkir, bisa dicuri).
+export function newCar(mesh, x, z, heading, driver) {
   return {
     mesh,
     pos: { x, z },
@@ -96,23 +116,35 @@ export function createCar(mesh, x, z, heading, driver) {
     driver,
     color: mesh.userData.color ?? 0xffffff,
     alive: true,
+    cruise: 10,
+    horizontal: true,
   };
 }
 
-export function syncCarMesh(car) {
+export function syncCar(car) {
   car.mesh.position.set(car.pos.x, 0, car.pos.z);
   car.mesh.rotation.y = car.heading;
   for (const w of car.mesh.userData.wheels) {
     w.pivot.rotation.y = w.front ? car.steerAngle : 0;
-    w.pivot.children[0].rotation.x += car.speed * 0.016 / 0.38;
+    w.pivot.children[0].rotation.x += (car.speed * 0.016) / 0.38;
   }
 }
 
-// Arcade driving: throttle accelerates, S brakes then reverses, steering
-// scales with speed so the car stays controllable at a standstill.
+// Lampu polisi berkedip merah-biru mengikuti waktu dunia (deterministik:
+// memakai world time, bukan jam dinding, supaya screenshot bisa diulang).
+export function flashCopLights(car, timeSeconds) {
+  const red = car.mesh.userData.copRed;
+  const blue = car.mesh.userData.copBlue;
+  if (!red || !blue) return;
+  const phase = Math.floor(timeSeconds / 0.28) % 2 === 0;
+  red.material.color.setHex(phase ? 0xff2a2a : 0x5a1010);
+  blue.material.color.setHex(phase ? 0x10265a : 0x2a6bff);
+}
+
+// Fisika arcade: gas mempercepat, S mengerem lalu mundur, setir berskala
+// dengan kecepatan supaya mobil tetap terkendali saat diam.
 export function driveCar(car, throttle, steer, dt, colliders, onCrash) {
-  const forward = throttle > 0;
-  if (forward) car.speed += CAR.accel * throttle * dt;
+  if (throttle > 0) car.speed += CAR.accel * throttle * dt;
   else if (throttle < 0) {
     if (car.speed > 0.5) car.speed -= CAR.brake * dt;
     else car.speed += CAR.reverseAccel * throttle * dt;
@@ -126,12 +158,10 @@ export function driveCar(car, throttle, steer, dt, colliders, onCrash) {
   car.steerAngle += (steerTarget - car.steerAngle) * Math.min(1, dt * 8);
   car.heading += car.steerAngle * (car.speed / CAR.maxSpeed) * dt * 2.2 * Math.sign(car.speed || 1);
 
-  const nx = car.pos.x + Math.sin(car.heading) * car.speed * dt;
-  const nz = car.pos.z + Math.cos(car.heading) * car.speed * dt;
   const before = { x: car.pos.x, z: car.pos.z };
-  car.pos.x = nx;
-  car.pos.z = nz;
-  // Cars never leave the city: clamp and bleed speed at the edge.
+  car.pos.x += Math.sin(car.heading) * car.speed * dt;
+  car.pos.z += Math.cos(car.heading) * car.speed * dt;
+  // Mobil tidak pernah keluar kota: tahan di tepi dan buang kecepatan.
   const lim = 192;
   if (car.pos.x > lim || car.pos.x < -lim || car.pos.z > lim || car.pos.z < -lim) {
     car.pos.x = Math.max(-lim, Math.min(lim, car.pos.x));
@@ -139,7 +169,7 @@ export function driveCar(car, throttle, steer, dt, colliders, onCrash) {
     car.speed *= 0.5;
   }
   if (colliders) {
-    const hit = collideBuildings(colliders, car.pos, CAR.radius);
+    const hit = pushOutOfBuildings(colliders, car.pos, CAR.radius);
     if (hit && Math.abs(car.speed) > 6) {
       if (onCrash) onCrash(Math.abs(car.speed));
       car.speed *= 0.35;
@@ -147,14 +177,12 @@ export function driveCar(car, throttle, steer, dt, colliders, onCrash) {
   }
   const moved = Math.hypot(car.pos.x - before.x, car.pos.z - before.z);
   if (moved < Math.abs(car.speed) * dt * 0.4 && Math.abs(car.speed) > 8) {
-    // Stuck against a wall: bleed speed instead of grinding through it.
+    // Mentok tembok: buang kecepatan, jangan menggiling menembusnya.
     car.speed *= 0.9;
   }
-  syncCarMesh(car);
+  syncCar(car);
 }
 
 export function carDistance(a, b) {
-  const dx = a.pos.x - b.pos.x;
-  const dz = a.pos.z - b.pos.z;
-  return Math.hypot(dx, dz);
+  return Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z);
 }
